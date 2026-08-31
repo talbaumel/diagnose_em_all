@@ -1,0 +1,4 @@
+azure-identity>=1.25,<2
+pygame>=2.6,<3
+sounddevice>=0.5,<1
+websockets>=15,<16
