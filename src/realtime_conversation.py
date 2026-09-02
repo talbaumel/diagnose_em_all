@@ -90,16 +90,6 @@ SPRITE_ROW_Y = (221, 725)
 STATE_ROWS = {"idle": 0, "talking": 1, "worried": 2, "relieved": 3}
 
 
-def _normalize_phrase(value: str) -> str:
-    return " ".join(re.findall(r"\w+", value.casefold()))
-
-
-def _contains_phrase(transcript: str, secret_phrase: str) -> bool:
-    normalized_transcript = _normalize_phrase(transcript)
-    normalized_secret = _normalize_phrase(secret_phrase)
-    return bool(normalized_secret) and normalized_secret in normalized_transcript
-
-
 def _is_inactive_cancellation(error: dict[str, Any]) -> bool:
     message = str(error.get("message", "")).casefold()
     return "cancellation failed" in message and "no active response" in message
@@ -443,7 +433,6 @@ class PatientAnimator:
 
 async def _run_conversation(
     system_prompt: str,
-    secret_phrase: str,
     patient_index: int,
     tests: Sequence[Test],
 ) -> None:
@@ -468,26 +457,25 @@ async def _run_conversation(
                             "type": "realtime",
                             "instructions": (
                                 f"{system_prompt}\n\n"
-                                "When the clinician reaches the correct diagnosis, call "
-                                "report_diagnosis exactly once with that diagnosis."
+                                "When the clinician asks to perform one of the "
+                                "available diagnostic tests, call its matching tool "
+                                "immediately. Do not describe or invent the test result "
+                                "yourself. "
+                                "When the clinician correctly diagnoses the patient, "
+                                "call win exactly once."
                             ),
                             "output_modalities": ["audio"],
                             "tools": [
                                 {
                                     "type": "function",
-                                    "name": "report_diagnosis",
+                                    "name": "win",
                                     "description": (
-                                        "Report that the clinician has diagnosed the patient."
+                                        "Declare that the clinician correctly diagnosed "
+                                        "the patient. Call only for the correct diagnosis."
                                     ),
                                     "parameters": {
                                         "type": "object",
-                                        "properties": {
-                                            "diagnosis": {
-                                                "type": "string",
-                                                "description": "The diagnosis reached.",
-                                            }
-                                        },
-                                        "required": ["diagnosis"],
+                                        "properties": {},
                                         "additionalProperties": False,
                                     },
                                 },
@@ -573,8 +561,7 @@ async def _run_conversation(
                 ) as output_stream,
             ):
                 print(
-                    "Conversation started. Say the secret phrase to stop "
-                    "or press Ctrl+C."
+                    "Conversation started. Diagnose the patient or press Ctrl+C."
                 )
 
                 async def send_microphone_audio() -> None:
@@ -624,16 +611,10 @@ async def _run_conversation(
                                 }
                             )
                         )
-                        if _contains_phrase(message, secret_phrase):
-                            animator.show_win()
-                            print("YOU WIN")
-                            await asyncio.sleep(RELIEVED_DURATION_SECONDS)
-                            stop.set()
-                            return
                         await websocket.send(json.dumps({"type": "response.create"}))
 
                 async def receive_events() -> None:
-                    diagnosis_reported = False
+                    win_reported = False
                     async for raw_message in websocket:
                         event = json.loads(raw_message)
                         event_type = event.get("type")
@@ -659,14 +640,12 @@ async def _run_conversation(
                             print(event.get("delta", ""), end="", flush=True)
                         elif (
                             event_type == "response.function_call_arguments.done"
-                            and event.get("name") == "report_diagnosis"
-                            and not diagnosis_reported
+                            and event.get("name") == "win"
+                            and not win_reported
                         ):
-                            diagnosis_reported = True
-                            animator.show_relieved()
-                            arguments = json.loads(event.get("arguments", "{}"))
-                            diagnosis = arguments.get("diagnosis", "diagnosis reported")
-                            print(f"\nDiagnosis: {diagnosis}")
+                            win_reported = True
+                            animator.show_win()
+                            print("\nYOU WIN")
                             await websocket.send(
                                 json.dumps(
                                     {
@@ -674,14 +653,14 @@ async def _run_conversation(
                                         "item": {
                                             "type": "function_call_output",
                                             "call_id": event["call_id"],
-                                            "output": json.dumps(
-                                                {"acknowledged": True}
-                                            ),
+                                            "output": json.dumps({"won": True}),
                                         },
                                     }
                                 )
                             )
-                            await websocket.send(json.dumps({"type": "response.create"}))
+                            await asyncio.sleep(RELIEVED_DURATION_SECONDS)
+                            stop.set()
+                            return
                         elif (
                             event_type == "response.function_call_arguments.done"
                             and event.get("name") in tests_by_tool
@@ -713,12 +692,6 @@ async def _run_conversation(
                         ):
                             transcript = event.get("transcript", "")
                             print(f"\nYou: {transcript}")
-                            if _contains_phrase(transcript, secret_phrase):
-                                animator.show_win()
-                                print("YOU WIN")
-                                await asyncio.sleep(RELIEVED_DURATION_SECONDS)
-                                stop.set()
-                                return
                         elif event_type == "error":
                             error = event.get("error", {})
                             if _is_inactive_cancellation(error):
@@ -749,19 +722,14 @@ async def _run_conversation(
 
 def strat_conversation(
     system_prompts: str | Sequence[str],
-    secret_phrase: str,
     patient_type: PatientType,
     tests: Sequence[Test],
 ) -> None:
     """Start a patient conversation with diagnostic tools and result popups."""
-    if not _normalize_phrase(secret_phrase):
-        raise ValueError("secret_phrase must not be empty")
-
     try:
         asyncio.run(
             _run_conversation(
                 _combine_prompts(system_prompts),
-                secret_phrase,
                 _patient_index(patient_type),
                 tests,
             )
@@ -773,7 +741,6 @@ def strat_conversation(
 if __name__ == "__main__":
     strat_conversation(
         "You are a concise, helpful voice assistant.",
-        "end conversation",
         PatientType.COMMON_COLD_KID,
         [Test("temperature", "38")],
     )
