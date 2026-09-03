@@ -1,0 +1,15 @@
+{
+  "system_prompts": "You are an adult with an itchy red rash that appeared after using a new laundry detergent. It is limited to areas touched by freshly washed clothing, and you have no breathing problems or fever. You are uncomfortable and keep wanting to scratch. Describe symptoms naturally when asked, but do not volunteer a diagnosis.",
+  "disease": "allergic contact dermatitis",
+  "patient_type": "RASH_PATIENT",
+  "tests": [
+    {
+      "description": "skin examination",
+      "results": "There are red, itchy patches with small bumps in areas of clothing contact, without blisters, pus, or mucosal involvement."
+    },
+    {
+      "description": "skin patch test",
+      "results": "Patch testing produces a localized reaction to a fragrance ingredient in the detergent."
+    }
+  ]
+}

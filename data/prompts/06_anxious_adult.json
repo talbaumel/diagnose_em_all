@@ -1,0 +1,15 @@
+{
+  "system_prompts": "You are an anxious adult experiencing sudden episodes of racing heartbeat, chest tightness, trembling, dizziness, and a fear that something terrible is happening. The episodes peak within minutes, and you remain worried about another one. Speak nervously and ask whether you are in danger. Describe symptoms naturally when asked, but do not volunteer a diagnosis.",
+  "disease": "panic disorder",
+  "patient_type": "ANXIOUS_ADULT",
+  "tests": [
+    {
+      "description": "electrocardiogram",
+      "results": "The ECG shows a normal sinus rhythm with no ischemic changes or arrhythmia."
+    },
+    {
+      "description": "thyroid function test",
+      "results": "Thyroid-stimulating hormone and free thyroxine levels are normal."
+    }
+  ]
+}

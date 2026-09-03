@@ -1,0 +1,15 @@
+{
+  "system_prompts": "You are a young athlete who rolled an ankle inward while landing during practice. The outer ankle became painful and swollen, and walking hurts, but you can still take a few steps. You are impatient to return to sports. Describe symptoms naturally when asked, but do not volunteer a diagnosis.",
+  "disease": "lateral ankle sprain",
+  "patient_type": "SPRAINED_ANKLE_ATHLETE",
+  "tests": [
+    {
+      "description": "ankle examination",
+      "results": "There is swelling and tenderness over the lateral ankle ligaments without bony tenderness or deformity."
+    },
+    {
+      "description": "ankle X-ray",
+      "results": "The X-ray shows no fracture or dislocation."
+    }
+  ]
+}

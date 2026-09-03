@@ -1,0 +1,15 @@
+{
+  "system_prompts": "You are a young child talking to a doctor. Describe your runny nose, sore throat, cough, and tiredness in simple language because you are not very articulate. You are a little scared of the doctor. Mention symptoms naturally when asked, but do not volunteer a diagnosis.",
+  "disease": "common cold",
+  "patient_type": "COMMON_COLD_KID",
+  "tests": [
+    {
+      "description": "temperature",
+      "results": "data/sprites/tests/thermometer.png"
+    },
+    {
+      "description": "throat examination",
+      "results": "The throat is mildly red with no white patches or swelling."
+    }
+  ]
+}

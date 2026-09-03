@@ -40,11 +40,10 @@ REALTIME_CONNECT_ATTEMPTS = 3
 SAMPLE_RATE = 24_000
 CHANNELS = 1
 BLOCK_DURATION_MS = 100
-SPRITE_SIZE = 56
 ANIMATION_FPS = 8
 RELIEVED_DURATION_SECONDS = 5
-SPRITE_SHEET = Path(__file__).parents[1] / "data" / "sprites" / "patients.png"
 PROJECT_ROOT = Path(__file__).parents[1]
+PATIENT_SPRITES_DIR = PROJECT_ROOT / "data" / "sprites" / "patients"
 IMAGE_SUFFIXES = {".bmp", ".gif", ".jpeg", ".jpg", ".png", ".webp"}
 
 
@@ -59,6 +58,7 @@ class PatientType(str, Enum):
     RASH_PATIENT = "Rash Patient"
     ELDERLY_WITH_BACK_PAIN = "Elderly with Back Pain"
     SLEEP_DEPRIVED_WORKER = "Sleep-Deprived Worker"
+    ECCENTRIC_NEIGHBOR = "Eccentric Neighbor"
 
 
 @dataclass(frozen=True)
@@ -85,9 +85,27 @@ class Test:
 
 
 PATIENT_TYPES = tuple(patient_type.value for patient_type in PatientType)
-PATIENT_PANEL_X = (9, 313, 614, 923, 1232)
-SPRITE_ROW_Y = (221, 725)
-STATE_ROWS = {"idle": 0, "talking": 1, "worried": 2, "relieved": 3}
+PATIENT_SPRITE_SHEETS = (
+    "01_common_cold_kid.png",
+    "02_stomachache_teen.png",
+    "03_migraine_patient.png",
+    "04_allergy_patient.png",
+    "05_injured_athlete.png",
+    "06_anxious_adult.png",
+    "07_feverish_patient.png",
+    "08_rash_patient.png",
+    "09_older_patient_back_pain.png",
+    "10_sleep_deprived_worker.png",
+    "11_eccentric_neighbor.png",
+)
+SPRITE_GRID_LEFT = 73
+SPRITE_GRID_RIGHT = 266
+STATE_BOUNDS = {
+    "idle": (288, 349),
+    "talking": (350, 414),
+    "worried": (415, 477),
+    "relieved": (478, 542),
+}
 
 
 def _is_inactive_cancellation(error: dict[str, Any]) -> bool:
@@ -104,6 +122,26 @@ def _combine_prompts(system_prompts: str | Sequence[str]) -> str:
     if not prompt:
         raise ValueError("system_prompts must contain at least one non-empty prompt")
     return prompt
+
+
+def _patient_instructions(system_prompt: str, disease: str) -> str:
+    disease = disease.strip()
+    if not disease:
+        raise ValueError("disease must not be empty")
+
+    return (
+        f"{system_prompt}\n\n"
+        "This is a diagnostic game. Act only as the patient while the clinician "
+        "tries to diagnose you. Describe your symptoms naturally, but never state, "
+        "spell, confirm, or otherwise reveal your disease. "
+        f"Your exact disease is: {disease}. "
+        "Do not reveal, list, suggest, or hint at the available diagnostic tests, "
+        "even if the clinician asks what tests are available. "
+        "When the clinician asks to perform one of the available diagnostic tests, "
+        "call its matching tool immediately. Do not describe or invent the test "
+        "result yourself. When the clinician correctly diagnoses the patient, call "
+        "win exactly once."
+    )
 
 
 def _patient_index(patient_type: PatientType) -> int:
@@ -173,8 +211,8 @@ class PatientAnimator:
         pygame.init()
         pygame.display.set_caption("Patient Conversation")
         self._screen = pygame.display.set_mode((480, 480))
-        self._sheet = pygame.image.load(str(SPRITE_SHEET)).convert_alpha()
-        self._patient_index = patient_index
+        sheet_path = PATIENT_SPRITES_DIR / PATIENT_SPRITE_SHEETS[patient_index]
+        self._sheet = pygame.image.load(str(sheet_path)).convert_alpha()
         self._state = "idle"
         self._relieved_until = 0.0
         self._test_result: Test | None = None
@@ -259,13 +297,15 @@ class PatientAnimator:
         return self._state
 
     def _frame(self, state: str, frame_index: int) -> pygame.Surface:
-        column = self._patient_index % 5
-        row = self._patient_index // 5
+        grid_width = SPRITE_GRID_RIGHT - SPRITE_GRID_LEFT
+        left = SPRITE_GRID_LEFT + round(frame_index * grid_width / 4)
+        right = SPRITE_GRID_LEFT + round((frame_index + 1) * grid_width / 4)
+        top, bottom = STATE_BOUNDS[state]
         rectangle = pygame.Rect(
-            PATIENT_PANEL_X[column] + 68 + frame_index * SPRITE_SIZE,
-            SPRITE_ROW_Y[row] + STATE_ROWS[state] * SPRITE_SIZE,
-            SPRITE_SIZE,
-            SPRITE_SIZE,
+            left,
+            top,
+            right - left,
+            bottom - top,
         )
         return self._sheet.subsurface(rectangle)
 
@@ -433,6 +473,7 @@ class PatientAnimator:
 
 async def _run_conversation(
     system_prompt: str,
+    disease: str,
     patient_index: int,
     tests: Sequence[Test],
 ) -> None:
@@ -455,14 +496,8 @@ async def _run_conversation(
                         "type": "session.update",
                         "session": {
                             "type": "realtime",
-                            "instructions": (
-                                f"{system_prompt}\n\n"
-                                "When the clinician asks to perform one of the "
-                                "available diagnostic tests, call its matching tool "
-                                "immediately. Do not describe or invent the test result "
-                                "yourself. "
-                                "When the clinician correctly diagnoses the patient, "
-                                "call win exactly once."
+                            "instructions": _patient_instructions(
+                                system_prompt, disease
                             ),
                             "output_modalities": ["audio"],
                             "tools": [
@@ -722,6 +757,7 @@ async def _run_conversation(
 
 def strat_conversation(
     system_prompts: str | Sequence[str],
+    disease: str,
     patient_type: PatientType,
     tests: Sequence[Test],
 ) -> None:
@@ -730,6 +766,7 @@ def strat_conversation(
         asyncio.run(
             _run_conversation(
                 _combine_prompts(system_prompts),
+                disease,
                 _patient_index(patient_type),
                 tests,
             )
@@ -741,6 +778,7 @@ def strat_conversation(
 if __name__ == "__main__":
     strat_conversation(
         "You are a concise, helpful voice assistant.",
+        "common cold",
         PatientType.COMMON_COLD_KID,
         [Test("temperature", "38")],
     )

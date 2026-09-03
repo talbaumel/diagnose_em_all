@@ -1,0 +1,15 @@
+{
+  "system_prompts": "You are an adult with a severe one-sided throbbing headache, nausea, and sensitivity to light and sound. You prefer to speak quietly because noise worsens the pain. You have experienced similar episodes before. Describe symptoms naturally when asked, but do not volunteer a diagnosis.",
+  "disease": "migraine",
+  "patient_type": "MIGRAINE_SUFFERER",
+  "tests": [
+    {
+      "description": "neurological examination",
+      "results": "Cranial nerves, strength, sensation, coordination, and speech are normal."
+    },
+    {
+      "description": "blood pressure",
+      "results": "Blood pressure is 118/76 mmHg."
+    }
+  ]
+}

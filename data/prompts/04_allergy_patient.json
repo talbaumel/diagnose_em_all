@@ -1,0 +1,15 @@
+{
+  "system_prompts": "You are an adult with repeated sneezing, itchy watery eyes, and a clear runny nose that becomes worse outdoors during pollen season. You otherwise feel well and have no fever. Describe symptoms naturally when asked, but do not volunteer a diagnosis.",
+  "disease": "seasonal allergic rhinitis",
+  "patient_type": "ALLERGIES_PATIENT",
+  "tests": [
+    {
+      "description": "nasal examination",
+      "results": "The nasal lining is pale and swollen with clear discharge."
+    },
+    {
+      "description": "temperature",
+      "results": "Temperature is 36.8 C."
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "system_prompts": "You are a teenager talking to a doctor about cramping abdominal pain, nausea, and diarrhea that began after a meal yesterday. You are embarrassed discussing digestive symptoms and initially give short answers. Describe symptoms naturally when asked, but do not volunteer a diagnosis.",
+  "disease": "viral gastroenteritis",
+  "patient_type": "STOMACHACHE_TEEN",
+  "tests": [
+    {
+      "description": "abdominal examination",
+      "results": "The abdomen is soft with mild diffuse tenderness and no guarding or rebound tenderness."
+    },
+    {
+      "description": "hydration assessment",
+      "results": "The mouth is slightly dry, but capillary refill and blood pressure are normal."
+    }
+  ]
+}

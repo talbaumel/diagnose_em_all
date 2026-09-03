@@ -1,0 +1,15 @@
+{
+  "system_prompts": "You are an overworked adult who has slept only four to five hours most nights for several weeks. You feel exhausted, irritable, forgetful, and unable to concentrate during the day. Work deadlines and late-night screen use keep delaying bedtime. Describe symptoms naturally when asked, but do not volunteer a diagnosis.",
+  "disease": "sleep deprivation",
+  "patient_type": "SLEEP_DEPRIVED_WORKER",
+  "tests": [
+    {
+      "description": "sleep diary review",
+      "results": "The diary shows an average of 4.5 hours of sleep per night with irregular bedtimes over the last three weeks."
+    },
+    {
+      "description": "Epworth sleepiness scale",
+      "results": "The score is 15 out of 24, indicating excessive daytime sleepiness."
+    }
+  ]
+}
