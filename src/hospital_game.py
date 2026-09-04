@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import warnings
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -9,6 +10,9 @@ from typing import Any
 
 import pygame
 
+from src.animation_assets import load_atlas
+from src.game_progress import Progress, ProgressStore
+from src.game_ui import ChoiceMenu
 from src.realtime_conversation import (
     HOSPITAL_MAP_IMAGE,
     PLAYER_FRAME_SIZE,
@@ -23,13 +27,14 @@ from src.realtime_conversation import (
     UI_TEAL,
     UI_WHITE,
     WINDOW_SIZE,
+    ConversationResult,
     PatientType,
     Test,
     animation_frame,
     extract_character,
     normalize_character_frames,
     patient_sprite_layout,
-    strat_conversation,
+    start_consultation,
 )
 
 
@@ -232,6 +237,8 @@ class HospitalNavigator:
         *,
         window: pygame.Surface | None = None,
         screen: pygame.Surface | None = None,
+        completion_announced: bool = False,
+        notice: str = "",
     ) -> None:
         pygame.init()
         pygame.display.set_caption("Diagnose 'Em All - Hospital")
@@ -249,9 +256,25 @@ class HospitalNavigator:
             raise ValueError("Every patient requires a position in PATIENT_POSITIONS")
         self._diagnosed = diagnosed
         self._player_position = pygame.Vector2(player_position)
+        if not self._can_stand(self._player_position):
+            self._player_position = pygame.Vector2(PLAYER_START)
+        self.completion_announced = completion_announced
+        self.restart_requested = False
+        self._notice = notice
+        self._notice_until = 8.0
+        self._menu: ChoiceMenu | None = None
+        self._menu_kind = ""
+        self._pause_button = pygame.Rect(308, 15, 28, 28)
+        if self._scenarios and all(scenario.patient_type in diagnosed for scenario in self._scenarios) and not completion_announced:
+            self._menu_kind = "complete"
+            self._menu = ChoiceMenu("ALL CASES CLOSED", ("Continue Exploring", "New Game"), f"{len(self._scenarios)} patients helped. Hospital rounds complete.")
         self._facing = "down"
         self._walking = False
         self._animation_time = 0.0
+        self._walk_time = 0.0
+        self._camera_position = self._camera_target()
+        self._greeting_patient: PatientType | None = None
+        self._greeting_until = 0.0
         self._scene_started_at = pygame.time.get_ticks()
 
         hospital_map = pygame.image.load(str(HOSPITAL_MAP_IMAGE)).convert()
@@ -266,10 +289,15 @@ class HospitalNavigator:
             )
             for direction in PLAYER_DIRECTION_ROWS
         }
+        player_source_size = (
+            max(frame.get_width() for frames in raw_player_frames.values() for frame in frames),
+            max(frame.get_height() for frames in raw_player_frames.values() for frame in frames),
+        )
         normalized_player_frames = {
             direction: normalize_character_frames(
                 frames,
                 OVERWORLD_CHARACTER_HEIGHT,
+                player_source_size,
             )
             for direction, frames in raw_player_frames.items()
         }
@@ -280,11 +308,13 @@ class HospitalNavigator:
             )
             for direction in PLAYER_DIRECTION_ROWS
         }
+        self._player_idle_frames: dict[str, tuple[pygame.Surface, ...]] | None = None
+        self._load_player_atlases()
         self._patient_frames = {}
         for scenario in self._scenarios:
             raw_patient_frames = {
                 state: self._load_patient_frames(scenario.patient_type, state)
-                for state in ("worried", "relieved")
+                for state in ("idle", "talking", "worried", "relieved")
             }
             patient_source_size = (
                 max(
@@ -379,11 +409,33 @@ class HospitalNavigator:
         return extract_character(frame)
 
     def _player_frame(self, animation_time: float) -> pygame.Surface:
+        if not self._walking and self._player_idle_frames is not None:
+            frames = self._player_idle_frames[self._facing]
+            sequence = (frames[0],) * 14 + (frames[1], frames[2], frames[3], frames[1])
+            return animation_frame(sequence, self._animation_time, 6)
         return animation_frame(
             self._player_frames[self._facing],
             animation_time,
             7,
         )
+
+    def _load_player_atlases(self) -> None:
+        directory = PLAYER_DIRECTION_SHEET.parent
+        try:
+            walking = load_atlas(directory / "dr_ash_walk_prepared.png", 6)
+            idle = load_atlas(directory / "dr_ash_idle_atlas.png", 4)
+            frames = [frame for atlas in (walking, idle) for row in atlas for frame in row]
+            source_size = (max(frame.get_width() for frame in frames), max(frame.get_height() for frame in frames))
+            prepared = [
+                {
+                    direction: normalize_character_frames(atlas[index], OVERWORLD_CHARACTER_HEIGHT, source_size)
+                    for direction, index in PLAYER_DIRECTION_ROWS.items()
+                }
+                for atlas in (walking, idle)
+            ]
+            self._player_frames, self._player_idle_frames = prepared
+        except (OSError, ValueError, pygame.error) as error:
+            warnings.warn(f"Using original player sprites: {error}", RuntimeWarning, stacklevel=2)
 
     def _scenario_position(self, scenario: PatientScenario) -> pygame.Vector2:
         patient_index = self._patient_index(scenario.patient_type)
@@ -446,7 +498,7 @@ class HospitalNavigator:
             self._walking = False
             return
 
-        self._walking = True
+        previous_position = self._player_position.copy()
         if abs(direction.x) > abs(direction.y):
             self._facing = "left" if direction.x < 0 else "right"
         else:
@@ -460,6 +512,7 @@ class HospitalNavigator:
         vertical = self._player_position + pygame.Vector2(0, direction.y * distance)
         if self._can_stand(vertical):
             self._player_position = vertical
+        self._walking = self._player_position != previous_position
 
     def nearest_patient(self) -> PatientScenario | None:
         available_scenarios = tuple(
@@ -497,7 +550,23 @@ class HospitalNavigator:
         )
         return nearest if distance_to_room(nearest) <= 76 else None
 
+    def update(self, direction: pygame.Vector2, elapsed_seconds: float) -> None:
+        self.move(direction, elapsed_seconds)
+        self._animation_time += elapsed_seconds
+        self._walk_time = self._walk_time + elapsed_seconds if self._walking else 0.0
+        self._camera_position = self._camera_position.lerp(
+            self._camera_target(), 1 - math.exp(-elapsed_seconds / 0.10)
+        )
+        nearby = self.nearest_patient()
+        patient_type = nearby.patient_type if nearby else None
+        if patient_type != self._greeting_patient:
+            self._greeting_patient = patient_type
+            self._greeting_until = self._animation_time + 1.6
+
     def _camera(self) -> pygame.Vector2:
+        return self._camera_position.copy()
+
+    def _camera_target(self) -> pygame.Vector2:
         return pygame.Vector2(
             max(
                 0,
@@ -775,6 +844,16 @@ class HospitalNavigator:
         title = self._title_font.render("DIAGNOSE 'EM ALL", True, UI_WHITE)
         self._screen.blit(eyebrow, (56, 9))
         self._screen.blit(title, (56, 23))
+        pygame.draw.rect(self._screen, UI_PANEL, self._pause_button, border_radius=5)
+        for horizontal in (317, 325):
+            pygame.draw.rect(self._screen, UI_MINT, (horizontal, 23, 3, 12))
+        mouse = pygame.mouse.get_pos()
+        mouse_position = (mouse[0] * SCREEN_SIZE[0] / self._window.get_width(), mouse[1] * SCREEN_SIZE[1] / self._window.get_height())
+        if self._pause_button.collidepoint(mouse_position) and self._menu is None:
+            tooltip = self._small_font.render("Pause", True, UI_WHITE)
+            rectangle = tooltip.get_rect(midtop=(322, 61)).inflate(12, 8)
+            pygame.draw.rect(self._screen, UI_PANEL, rectangle, border_radius=4)
+            self._screen.blit(tooltip, tooltip.get_rect(center=rectangle.center))
 
         count = self._count_font.render(
             f"{len(self._diagnosed):02d} / {len(self._scenarios):02d}",
@@ -842,12 +921,15 @@ class HospitalNavigator:
             border_top_left_radius=7,
             border_bottom_left_radius=7,
         )
-        eyebrow = self._eyebrow_font.render("READY FOR CONSULT", True, UI_GOLD)
-        patient_name = self._label_font.render("UNIDENTIFIED PATIENT", True, UI_WHITE)
+        nearby = self.nearest_patient()
+        completed = nearby is not None and nearby.patient_type in self._diagnosed
+        eyebrow = self._eyebrow_font.render("CASE CLOSED" if completed else "READY FOR CONSULT", True, UI_GOLD)
+        number = self._patient_index(nearby.patient_type) + 1 if nearby else 0
+        patient_name = self._label_font.render(f"PATIENT {number:02d}", True, UI_WHITE)
         self._screen.blit(eyebrow, (30, 422))
         self._screen.blit(patient_name, (30, 437))
 
-        action = self._small_font.render("DIAGNOSE", True, UI_MINT)
+        action = self._small_font.render("REVISIT" if completed else "DIAGNOSE", True, UI_MINT)
         action_right = 447
         action_center_y = panel.centery
         self._screen.blit(
@@ -900,7 +982,7 @@ class HospitalNavigator:
         self._draw_room_locks(camera)
 
         player_frame = self._player_frame(
-            self._animation_time if self._walking else 0.0
+            self._walk_time if self._walking else 0.0
         )
         drawables: list[
             tuple[float, pygame.Surface, pygame.Rect, PatientType | None]
@@ -908,15 +990,20 @@ class HospitalNavigator:
         for scenario in self._scenarios:
             world_position = self._scenario_position(scenario)
             screen_position = world_position - camera
-            patient_state = (
-                "relieved"
-                if scenario.patient_type in self._diagnosed
-                else "worried"
-            )
+            phase = self._animation_time + self._patient_index(scenario.patient_type) * 0.73
+            if scenario.patient_type in self._diagnosed:
+                patient_state = "relieved"
+            elif (
+                scenario.patient_type == self._greeting_patient
+                and self._animation_time < self._greeting_until
+            ):
+                patient_state = "talking"
+            else:
+                patient_state = "idle" if phase % 10 < 3 else "worried"
             patient_frames = self._patient_frames[scenario.patient_type][patient_state]
             patient_frame = animation_frame(
                 patient_frames,
-                self._animation_time,
+                phase,
                 5,
             )
             drawables.append(
@@ -954,7 +1041,7 @@ class HospitalNavigator:
             draw_rectangle = rectangle
             if patient_type is None and self._walking:
                 walk_lift = round(
-                    abs(math.sin(self._animation_time * math.pi * 7)) * 2
+                    abs(math.sin(self._walk_time * math.pi * 7)) * 2
                 )
                 draw_rectangle = rectangle.move(0, -walk_lift)
             self._screen.blit(surface, draw_rectangle)
@@ -973,6 +1060,14 @@ class HospitalNavigator:
 
         self._draw_scene_fade()
 
+        if self._notice and self._animation_time < self._notice_until:
+            banner = pygame.Rect(12, 66, 456, 32)
+            pygame.draw.rect(self._screen, UI_PANEL, banner, border_radius=5)
+            text = self._small_font.render(self._notice, True, UI_GOLD)
+            self._screen.blit(text, text.get_rect(center=banner.center))
+        if self._menu is not None:
+            self._menu.draw(self._screen)
+
         pygame.transform.scale(self._screen, self._window.get_size(), self._window)
         pygame.display.flip()
 
@@ -982,32 +1077,76 @@ class HospitalNavigator:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     return None
+                if event.type == pygame.WINDOWFOCUSLOST and self._menu is None:
+                    self._pause()
+                if self._menu is not None:
+                    choice = self._menu.handle_event(event, self._window.get_size())
+                    if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                        choice = "Resume" if self._menu_kind == "pause" else "Cancel"
+                    if choice is not None and self._choose_menu(choice):
+                        return None
+                    continue
+                if event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+                    position = (event.pos[0] * SCREEN_SIZE[0] / self._window.get_width(), event.pos[1] * SCREEN_SIZE[1] / self._window.get_height())
+                    if self._pause_button.collidepoint(position):
+                        self._pause()
+                        continue
                 if event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_ESCAPE:
-                        return None
+                        self._pause()
+                        continue
                     if event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
                         nearby = self.nearest_patient()
                         if nearby:
                             self._fade_out()
                             return nearby
 
+            if self._menu is not None:
+                self.draw()
+                continue
             keys = pygame.key.get_pressed()
             direction = pygame.Vector2(
-                int(keys[pygame.K_RIGHT]) - int(keys[pygame.K_LEFT]),
-                int(keys[pygame.K_DOWN]) - int(keys[pygame.K_UP]),
+                int(keys[pygame.K_RIGHT] or keys[pygame.K_d])
+                - int(keys[pygame.K_LEFT] or keys[pygame.K_a]),
+                int(keys[pygame.K_DOWN] or keys[pygame.K_s])
+                - int(keys[pygame.K_UP] or keys[pygame.K_w]),
             )
-            self.move(direction, elapsed_seconds)
-            self._animation_time += elapsed_seconds
+            self.update(direction, elapsed_seconds)
             self.draw()
+
+    def _pause(self) -> None:
+        self._walking = False
+        self._menu_kind = "pause"
+        self._menu = ChoiceMenu("HOSPITAL PAUSED", ("Resume", "New Game", "Save & Quit"), f"{len(self._diagnosed)} of {len(self._scenarios)} cases closed.")
+
+    def _choose_menu(self, choice: str) -> bool:
+        if choice == "New Game":
+            self._menu_kind = "reset"
+            self._menu = ChoiceMenu("START NEW ROUNDS?", ("Cancel", "Reset Progress"), "Completed cases for this patient roster will be reset.")
+        elif choice == "Reset Progress":
+            self.restart_requested = True
+            return True
+        elif choice == "Save & Quit":
+            return True
+        elif choice in ("Resume", "Continue Exploring", "Cancel"):
+            if self._menu_kind == "complete" or choice == "Continue Exploring":
+                self.completion_announced = True
+            self._menu = None
+            self._menu_kind = ""
+            self._clock.tick()
+        return False
 
     def close(self) -> None:
         if self._owns_display:
             pygame.quit()
 
 
-def start_hospital_game(scenarios: Sequence[PatientScenario]) -> None:
-    diagnosed: set[PatientType] = set()
-    player_position = PLAYER_START
+def start_hospital_game(scenarios: Sequence[PatientScenario], *, save_path: Path | None = None) -> None:
+    store = ProgressStore((scenario.patient_type.value for scenario in scenarios), save_path)
+    progress = store.load()
+    diagnosed = {PatientType(value) for value in progress.diagnosed}
+    player_position = progress.position
+    notice = store.warning
     pygame.init()
     window = pygame.display.set_mode(WINDOW_SIZE)
     screen = pygame.Surface(SCREEN_SIZE)
@@ -1020,18 +1159,52 @@ def start_hospital_game(scenarios: Sequence[PatientScenario]) -> None:
                 player_position,
                 window=window,
                 screen=screen,
+                completion_announced=progress.completion_announced,
+                notice=notice,
             )
             selected_patient = navigator.run()
             player_position = navigator.player_position
+            progress = Progress({patient.value for patient in diagnosed}, player_position, navigator.completion_announced)
             navigator.close()
+            if navigator.restart_requested:
+                diagnosed.clear()
+                progress = Progress()
+                player_position = PLAYER_START
+                store.save(progress, reset=True)
+                notice = store.warning
+                continue
+            saved = store.save(progress)
+            notice = store.warning
             if selected_patient is None:
+                if not saved:
+                    navigator._menu = ChoiceMenu("SAVE UNAVAILABLE", ("Return to Hospital", "Quit Without Saving"), store.warning)
+                    navigator._menu_kind = "save_error"
+                    navigator.draw()
+                    while True:
+                        event = pygame.event.wait()
+                        if event.type == pygame.QUIT:
+                            return
+                        choice = navigator._menu.handle_event(event, window.get_size())
+                        navigator.draw()
+                        if choice == "Quit Without Saving":
+                            return
+                        if choice == "Return to Hospital":
+                            break
+                    continue
                 return
 
-            if strat_conversation(
+            result = start_consultation(
                 **selected_patient.conversation_parameters(),
                 window=window,
                 screen=screen,
-            ):
+            )
+            if result == ConversationResult.QUIT:
+                return
+            if result == ConversationResult.SOLVED:
                 diagnosed.add(selected_patient.patient_type)
+                progress.diagnosed = {patient.value for patient in diagnosed}
+                store.save(progress)
+                unlocked = next((room.name for room in HOSPITAL_ROOMS if room.unlock_after == selected_patient.patient_type), None)
+                notice = store.warning or (f"{unlocked} unlocked" if unlocked else "Case closed. Progress saved.")
     finally:
         pygame.quit()

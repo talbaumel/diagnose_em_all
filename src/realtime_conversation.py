@@ -29,8 +29,11 @@ from typing import Any
 import pygame
 import sounddevice as sd
 import websockets
-from azure.identity import AzureCliCredential
+from azure.core.exceptions import AzureError
+from azure.identity.aio import AzureCliCredential
+from websockets.exceptions import WebSocketException
 
+from src.game_ui import ChoiceMenu, wrap_text
 
 REALTIME_URL = (
     "wss://tabaumel-resource.openai.azure.com/openai/v1/realtime"
@@ -158,6 +161,16 @@ def animation_frame(
 ) -> pygame.Surface:
     frame_index = math.floor(animation_time * frames_per_second) % len(frames)
     return frames[frame_index]
+
+
+class ConversationResult(str, Enum):
+    SOLVED = "solved"
+    RETURNED = "returned"
+    QUIT = "quit"
+
+
+class RealtimeSessionError(RuntimeError):
+    pass
 
 
 class PatientType(str, Enum):
@@ -581,6 +594,18 @@ class PatientAnimator:
         self._test_close_button = pygame.Rect(400, 48, 30, 30)
         self._won = False
         self._running = True
+        self.quit_requested = False
+        self.retry_requested = False
+        self._ready = True
+        self._sending = False
+        self._sent_until = 0.0
+        self._menu: ChoiceMenu | None = None
+        self._transcript: list[tuple[str, str]] = []
+        self._transcript_indexes: dict[str, int] = {}
+        self._transcript_lines: list[str] = []
+        self._transcript_scroll = 0
+        self._evidence_scroll = 0
+        self._evidence_max_scroll = 0
         self._push_to_talk = threading.Event()
         self._microphone_available = True
         self._text_messages: asyncio.Queue[str] = asyncio.Queue()
@@ -617,20 +642,27 @@ class PatientAnimator:
 
     def set_talking(self, talking: bool) -> None:
         self._state = "talking" if talking else "idle"
+        if talking:
+            self._sending = False
 
     def set_microphone_available(self, available: bool) -> None:
         self._microphone_available = available
         if not available:
             self._push_to_talk.clear()
+            self._set_text_focus(True)
 
     def show_relieved(self) -> None:
         self._relieved_until = time.monotonic() + RELIEVED_DURATION_SECONDS
 
     def show_win(self) -> None:
         self._won = True
+        self._set_text_focus(False)
+        self._menu = None
         self.show_relieved()
 
     def show_test_result(self, test: Test) -> None:
+        self._set_text_focus(False)
+        self._evidence_scroll = 0
         self._test_result = test
         image_path = test.image_path
         self._test_result_image = None
@@ -646,7 +678,7 @@ class PatientAnimator:
                         round(image.get_height() * scale),
                     ),
                 )
-            self._test_result_image = extract_character(image)
+            self._test_result_image = image
         self._push_to_talk.clear()
         self._evidence_closed.clear()
 
@@ -657,11 +689,58 @@ class PatientAnimator:
         return await self._text_messages.get()
 
     def _submit_text(self) -> None:
+        if not self._ready or self.evidence_open or self.won or self._menu is not None:
+            return
         message = self._text_input.strip()
         if not message:
             return
         self._text_messages.put_nowait(message)
+        self.add_transcript("You", message)
+        self._sending = True
         self._text_input = ""
+
+    def add_transcript(self, speaker: str, text: str, item_id: str | None = None, *, append: bool = False) -> None:
+        if not text:
+            return
+        previous_line_count = len(self._transcript_lines)
+        key = f"{speaker}:{item_id}" if item_id else None
+        if key is not None and key in self._transcript_indexes:
+            index = self._transcript_indexes[key]
+            previous = self._transcript[index][1] if append else ""
+            self._transcript[index] = (speaker, previous + text)
+        else:
+            if key is not None:
+                self._transcript_indexes[key] = len(self._transcript)
+            self._transcript.append((speaker, text))
+        self._transcript_lines = [
+            line
+            for author, message in self._transcript
+            for line in wrap_text(f"{author}: {message}", self._status_font, 438)
+        ]
+        if self._transcript_scroll:
+            self._transcript_scroll = max(0, self._transcript_scroll + len(self._transcript_lines) - previous_line_count)
+
+    def show_error(self, message: str) -> None:
+        self._ready = False
+        self._set_text_focus(False)
+        self._menu = ChoiceMenu("CONNECTION UNAVAILABLE", ("Retry", "Return to Hospital"), message)
+
+    def _draw_transcript(self) -> None:
+        area = pygame.Rect(0, 290, 480, 84)
+        pygame.draw.rect(self._screen, UI_PAPER, area)
+        pygame.draw.rect(self._screen, UI_TEAL, (0, 290, 480, 2))
+        visible_lines = 4
+        self._transcript_scroll = min(self._transcript_scroll, max(0, len(self._transcript_lines) - visible_lines))
+        end = len(self._transcript_lines) - self._transcript_scroll
+        lines = self._transcript_lines[max(0, end - visible_lines):end]
+        for index, line in enumerate(lines):
+            text = self._status_font.render(line, True, UI_INK)
+            self._screen.blit(text, (18, 301 + index * 17))
+        if len(self._transcript_lines) > visible_lines:
+            track = pygame.Rect(468, 300, 3, 64)
+            pygame.draw.rect(self._screen, UI_MUTED, track)
+            fraction = 1 - self._transcript_scroll / (len(self._transcript_lines) - visible_lines)
+            pygame.draw.rect(self._screen, UI_TEAL, (468, 300 + round(48 * fraction), 3, 16))
 
     def _set_text_focus(self, focused: bool) -> None:
         self._text_focused = focused
@@ -725,12 +804,18 @@ class PatientAnimator:
             return "CASE SOLVED", UI_MINT
         if self.evidence_open:
             return "EVIDENCE", UI_GOLD
-        if self._text_focused:
-            return "TYPING", UI_MINT
+        if not self._ready:
+            return "CONNECTING", UI_GOLD
         if self.push_to_talk:
             return "LISTENING", UI_CORAL
         if state == "talking":
             return "PATIENT SPEAKING", UI_MINT
+        if self._sending:
+            return "SENDING", UI_GOLD
+        if time.monotonic() < self._sent_until:
+            return "SENT", UI_MINT
+        if self._text_focused and self._text_input:
+            return "TYPING", UI_MINT
         if not self._microphone_available:
             return "TEXT MODE", UI_GOLD
         return "READY", UI_MINT
@@ -804,15 +889,15 @@ class PatientAnimator:
         motion_time = time.monotonic()
         patient_bob = round(math.sin(motion_time * 2.6) * 2)
         player_bob = round(math.sin(motion_time * 2.2 + 1.4))
-        patient_rect = patient_frame.get_rect(midbottom=(330, 363 + patient_bob))
-        player_rect = player_frame.get_rect(midbottom=(122, 373 + player_bob))
+        patient_rect = patient_frame.get_rect(midbottom=(330, 273 + patient_bob))
+        player_rect = player_frame.get_rect(midbottom=(122, 283 + player_bob))
         if self.push_to_talk:
             aura = pygame.Surface(SCREEN_SIZE, pygame.SRCALPHA)
             pulse = (math.sin(motion_time * 7) + 1) / 2
             for index in range(2):
                 phase = (pulse + index * 0.45) % 1
                 ring = pygame.Rect(0, 0, round(78 + phase * 28), round(18 + phase * 8))
-                ring.center = (player_rect.centerx, 366)
+                ring.center = (player_rect.centerx, 276)
                 pygame.draw.ellipse(
                     aura,
                     (*UI_CORAL, round(125 * (1 - phase))),
@@ -821,7 +906,7 @@ class PatientAnimator:
                 )
             self._screen.blit(aura, (0, 0))
         self._draw_shadow((patient_rect.centerx, patient_rect.bottom - 3), 78)
-        self._draw_shadow((player_rect.centerx, 369), 88)
+        self._draw_shadow((player_rect.centerx, 279), 88)
         self._screen.blit(patient_frame, patient_rect)
         self._screen.blit(player_frame, player_rect)
 
@@ -905,10 +990,9 @@ class PatientAnimator:
         self._screen.blit(rendered_input, input_rect)
         if (
             self._text_focused
-            and self._text_input
             and int(time.monotonic() * 2) % 2 == 0
         ):
-            cursor_x = min(input_rect.right + 2, input_area.right)
+            cursor_x = min(input_rect.right + 2, input_area.right - 2) if self._text_input else input_area.x
             pygame.draw.line(
                 self._screen,
                 UI_CORAL,
@@ -924,6 +1008,8 @@ class PatientAnimator:
             if self._text_send_button.collidepoint(mouse_position)
             else UI_CORAL
         )
+        if not self._text_input.strip() or not self._ready:
+            send_color = (91, 119, 116)
         pygame.draw.rect(
             self._screen,
             send_color,
@@ -958,19 +1044,7 @@ class PatientAnimator:
         font: pygame.font.Font,
         max_width: int,
     ) -> list[str]:
-        words = text.split()
-        lines: list[str] = []
-        current = ""
-        for word in words:
-            candidate = f"{current} {word}".strip()
-            if current and font.size(candidate)[0] > max_width:
-                lines.append(current)
-                current = word
-            else:
-                current = candidate
-        if current:
-            lines.append(current)
-        return lines
+        return wrap_text(text, font, max_width)
 
     def _draw_evidence(self) -> None:
         if self._test_result is None:
@@ -1001,7 +1075,7 @@ class PatientAnimator:
 
         eyebrow = self._eyebrow_font.render("EVIDENCE REPORT", True, UI_GOLD)
         title = self._test_title_font.render(
-            self._test_result.description.upper(),
+            "TEST RESULT",
             True,
             UI_WHITE,
         )
@@ -1030,11 +1104,16 @@ class PatientAnimator:
 
         content = pygame.Rect(48, 116, 384, 286)
         pygame.draw.rect(self._screen, (232, 241, 235), content, border_radius=6)
+        title_lines = wrap_text(self._test_result.description, self._test_title_font, content.width - 44)
+        result_lines = [] if self._test_result_image else wrap_text(self._test_result.results, self._test_result_font, content.width - 44)
+        title_height = len(title_lines) * 23 + 16
+        result_height = len(result_lines) * 28
+        image = None
         if self._test_result_image:
             image = self._test_result_image
             scale = min(
                 content.width * 0.88 / image.get_width(),
-                content.height * 0.78 / image.get_height(),
+            210 / image.get_height(),
             )
             image = pygame.transform.smoothscale(
                 image,
@@ -1043,20 +1122,24 @@ class PatientAnimator:
                     round(image.get_height() * scale),
                 ),
             )
-            self._screen.blit(image, image.get_rect(center=content.center))
-        else:
-            finding = self._eyebrow_font.render("CLINICAL FINDING", True, UI_TEAL)
-            self._screen.blit(finding, (70, 145))
-            lines = self._wrapped_lines(
-                self._test_result.results,
-                self._test_result_font,
-                content.width - 44,
-            )
-            line_height = self._test_result_font.get_linesize() + 5
-            start_y = 180
-            for index, line in enumerate(lines):
-                rendered_line = self._test_result_font.render(line, True, UI_INK)
-                self._screen.blit(rendered_line, (70, start_y + index * line_height))
+            result_height = image.get_height()
+        self._evidence_max_scroll = max(0, title_height + result_height + 32 - content.height)
+        self._evidence_scroll = min(self._evidence_scroll, self._evidence_max_scroll)
+        previous_clip = self._screen.get_clip()
+        self._screen.set_clip(content.inflate(-12, -12))
+        start_y = content.y + 16 - self._evidence_scroll
+        for index, line in enumerate(title_lines):
+            self._screen.blit(self._test_title_font.render(line, True, UI_TEAL), (70, start_y + index * 23))
+        start_y += title_height
+        if image:
+            self._screen.blit(image, image.get_rect(midtop=(content.centerx, start_y)))
+        for index, line in enumerate(result_lines):
+            self._screen.blit(self._test_result_font.render(line, True, UI_INK), (70, start_y + index * 28))
+        self._screen.set_clip(previous_clip)
+        if self._evidence_max_scroll:
+            pygame.draw.rect(self._screen, UI_MUTED, (440, 116, 3, 286))
+            offset = round(246 * self._evidence_scroll / self._evidence_max_scroll)
+            pygame.draw.rect(self._screen, UI_TEAL, (440, 116 + offset, 3, 40))
 
     def _draw_win(self) -> None:
         overlay = pygame.Surface(SCREEN_SIZE, pygame.SRCALPHA)
@@ -1097,60 +1180,94 @@ class PatientAnimator:
         self._screen.blit(self._world, (0, 0))
         self._draw_characters(patient_frame, player_frame, state)
         self._draw_header(state)
+        self._draw_transcript()
         self._draw_console(state)
         if self._test_result and not self.won:
             self._draw_evidence()
         if self.won:
             self._draw_win()
         self._draw_scene_fade()
+        if self._menu is not None and not self.evidence_open and not self.won:
+            self._menu.draw(self._screen)
 
         pygame.transform.scale(self._screen, self._window.get_size(), self._window)
         pygame.display.flip()
 
+    def handle_event(self, event: pygame.event.Event, stop: asyncio.Event) -> None:
+        if event.type == pygame.QUIT:
+            self.quit_requested = True
+            self._running = False
+            self._push_to_talk.clear()
+            stop.set()
+            return
+        if event.type == pygame.WINDOWFOCUSLOST:
+            self._set_text_focus(False)
+            return
+        if event.type == pygame.KEYUP and event.key in (pygame.K_LSHIFT, pygame.K_RSHIFT):
+            self._push_to_talk.clear()
+            return
+        if self.won:
+            return
+        key = event.key if event.type == pygame.KEYDOWN else None
+        clicked = event.type == pygame.MOUSEBUTTONUP and event.button == 1
+        if self.evidence_open:
+            if key in (pygame.K_ESCAPE, pygame.K_RETURN, pygame.K_KP_ENTER) or (
+                clicked and self._test_close_button.collidepoint(self._screen_position(event.pos))
+            ):
+                self.close_test_result()
+            elif event.type == pygame.MOUSEWHEEL:
+                self._evidence_scroll = max(0, min(self._evidence_max_scroll, self._evidence_scroll - event.y * 36))
+            elif key in (pygame.K_DOWN, pygame.K_PAGEDOWN, pygame.K_UP, pygame.K_PAGEUP):
+                delta = 120 if key in (pygame.K_DOWN, pygame.K_PAGEDOWN) else -120
+                self._evidence_scroll = max(0, min(self._evidence_max_scroll, self._evidence_scroll + delta))
+            return
+        if self._menu is not None:
+            choice = self._menu.handle_event(event, self._window.get_size())
+            if key == pygame.K_ESCAPE and "Keep Consulting" in self._menu.choices:
+                choice = "Keep Consulting"
+            if choice == "Keep Consulting":
+                self._menu = None
+            elif choice in ("Return to Hospital", "Retry"):
+                self.retry_requested = choice == "Retry"
+                self._running = False
+                stop.set()
+            return
+        if key == pygame.K_ESCAPE:
+            if self._text_focused:
+                self._set_text_focus(False)
+            else:
+                self._push_to_talk.clear()
+                self._menu = ChoiceMenu("LEAVE THIS CONSULTATION?", ("Keep Consulting", "Return to Hospital"), "This unfinished case will not be marked complete.")
+            return
+        if not self._ready:
+            return
+        if event.type == pygame.MOUSEWHEEL:
+            self._transcript_scroll = max(0, self._transcript_scroll + event.y * 2)
+        elif key in (pygame.K_PAGEUP, pygame.K_PAGEDOWN):
+            self._transcript_scroll = max(0, self._transcript_scroll + (4 if key == pygame.K_PAGEUP else -4))
+        elif event.type == pygame.TEXTINPUT and self._text_focused:
+            self._text_input += event.text
+        elif self._text_focused and key is not None:
+            if key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+                self._submit_text()
+            elif key == pygame.K_BACKSPACE:
+                self._text_input = self._text_input[:-1]
+        elif key in (pygame.K_LSHIFT, pygame.K_RSHIFT) and self._microphone_available:
+            self._push_to_talk.set()
+        elif clicked:
+            position = self._screen_position(event.pos)
+            if self._text_input_rect.collidepoint(position):
+                self._set_text_focus(True)
+            elif self._text_send_button.collidepoint(position):
+                self._submit_text()
+            else:
+                self._set_text_focus(False)
+
     async def run(self, stop: asyncio.Event) -> None:
         animation_started_at = time.monotonic()
-
         while not stop.is_set() and self._running:
             for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    self._running = False
-                    stop.set()
-                elif event.type == pygame.TEXTINPUT and self._text_focused:
-                    self._text_input += event.text
-                elif event.type == pygame.KEYDOWN and self._text_focused:
-                    if event.key == pygame.K_RETURN:
-                        self._submit_text()
-                    elif event.key == pygame.K_BACKSPACE:
-                        self._text_input = self._text_input[:-1]
-                    elif event.key == pygame.K_ESCAPE:
-                        self._set_text_focus(False)
-                elif event.type == pygame.KEYDOWN and event.key in (
-                    pygame.K_LSHIFT,
-                    pygame.K_RSHIFT,
-                ) and self._microphone_available:
-                    self._push_to_talk.set()
-                elif event.type == pygame.KEYUP and event.key in (
-                    pygame.K_LSHIFT,
-                    pygame.K_RSHIFT,
-                ):
-                    self._push_to_talk.clear()
-                elif (
-                    event.type == pygame.MOUSEBUTTONUP
-                    and event.button == 1
-                ):
-                    screen_position = self._screen_position(event.pos)
-                    if self._text_input_rect.collidepoint(screen_position):
-                        self._set_text_focus(True)
-                    elif self._text_send_button.collidepoint(screen_position):
-                        self._submit_text()
-                    elif (
-                        self._test_result
-                        and self._test_close_button.collidepoint(screen_position)
-                    ):
-                        self.close_test_result()
-                    else:
-                        self._set_text_focus(False)
-
+                self.handle_event(event, stop)
             self.draw(time.monotonic() - animation_started_at)
             await asyncio.sleep(1 / 60)
 
@@ -1162,32 +1279,21 @@ class PatientAnimator:
             pygame.quit()
 
 
-async def _run_conversation(
+async def _conversation_session(
     system_prompt: str,
     disease: str,
     patient_index: int,
     tests: Sequence[Test],
-    *,
-    window: pygame.Surface | None = None,
-    screen: pygame.Surface | None = None,
+    animator: PatientAnimator,
+    stop: asyncio.Event,
 ) -> bool:
-    credential = AzureCliCredential()
-    animator: PatientAnimator | None = None
+    credential = AzureCliCredential(process_timeout=15)
     test_tools, tests_by_tool = _test_tools(tests)
     try:
-        token = await asyncio.to_thread(
-            credential.get_token,
-            AZURE_OPENAI_SCOPE,
-        )
+        token = await credential.get_token(AZURE_OPENAI_SCOPE)
         headers = {"Authorization": f"Bearer {token.token}"}
-        stop = asyncio.Event()
 
         async with _realtime_connection(headers) as websocket:
-            animator = PatientAnimator(
-                patient_index,
-                window=window,
-                screen=screen,
-            )
             await websocket.send(
                 json.dumps(
                     {
@@ -1246,11 +1352,12 @@ async def _run_conversation(
                 )
             )
 
-            async for raw_message in websocket:
+            while True:
+                raw_message = await asyncio.wait_for(websocket.recv(), REALTIME_OPEN_TIMEOUT_SECONDS)
                 event = json.loads(raw_message)
                 if event.get("type") == "error":
                     error = event.get("error", {})
-                    raise RuntimeError(
+                    raise RealtimeSessionError(
                         f"Realtime API error: {error.get('message', error)}"
                     )
                 if event.get("type") == "session.updated":
@@ -1289,6 +1396,7 @@ async def _run_conversation(
                 ) as output_stream,
             ):
                 animator.set_microphone_available(input_stream is not None)
+                animator._ready = True
                 print(
                     "Conversation started. Diagnose the patient or press Ctrl+C."
                     if input_stream is not None
@@ -1317,6 +1425,8 @@ async def _run_conversation(
                 async def send_text_messages() -> None:
                     while not stop.is_set():
                         message = await animator.next_text_message()
+                        if animator.won or animator.evidence_open or animator._menu is not None:
+                            continue
                         print(f"\nYou: {message}")
                         if assistant_speaking.is_set():
                             cancelled_response.set()
@@ -1343,6 +1453,8 @@ async def _run_conversation(
                             )
                         )
                         await websocket.send(json.dumps({"type": "response.create"}))
+                        animator._sending = False
+                        animator._sent_until = time.monotonic() + 1.2
 
                 async def receive_events() -> None:
                     win_reported = False
@@ -1368,7 +1480,13 @@ async def _run_conversation(
                             assistant_speaking.clear()
                             cancelled_response.clear()
                         elif event_type == "response.output_audio_transcript.delta":
-                            print(event.get("delta", ""), end="", flush=True)
+                            if not cancelled_response.is_set():
+                                delta = event.get("delta", "")
+                                animator.add_transcript("Patient", delta, event.get("item_id") or event.get("response_id"), append=True)
+                                print(delta, end="", flush=True)
+                        elif event_type == "response.output_audio_transcript.done":
+                            if not cancelled_response.is_set():
+                                animator.add_transcript("Patient", event.get("transcript", ""), event.get("item_id") or event.get("response_id"))
                         elif (
                             event_type == "response.function_call_arguments.done"
                             and event.get("name") == "win"
@@ -1422,39 +1540,83 @@ async def _run_conversation(
                             "conversation.item.input_audio_transcription.completed"
                         ):
                             transcript = event.get("transcript", "")
+                            animator.add_transcript("You", transcript, event.get("item_id"))
                             print(f"\nYou: {transcript}")
                         elif event_type == "error":
                             error = event.get("error", {})
                             if _is_inactive_cancellation(error):
                                 cancelled_response.clear()
                                 continue
-                            raise RuntimeError(
+                            raise RealtimeSessionError(
                                 f"Realtime API error: {error.get('message', error)}"
                             )
+                    if not stop.is_set():
+                        raise ConnectionError("The patient connection closed unexpectedly")
 
                 text_sender = asyncio.create_task(send_text_messages())
                 receiver = asyncio.create_task(receive_events())
-                animation = asyncio.create_task(animator.run(stop))
-                tasks = {text_sender, receiver, animation}
+                stopped = asyncio.create_task(stop.wait())
+                tasks = {text_sender, receiver, stopped}
                 if input_stream is not None:
                     tasks.add(asyncio.create_task(send_microphone_audio()))
-                done, pending = await asyncio.wait(
-                    tasks,
-                    return_when=asyncio.FIRST_COMPLETED,
-                )
-                for task in pending:
-                    task.cancel()
-                await asyncio.gather(*pending, return_exceptions=True)
-                for task in done:
-                    task.result()
+                try:
+                    done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+                    for task in done:
+                        task.result()
+                finally:
+                    for task in tasks:
+                        task.cancel()
+                    output_stream.abort()
+                    await asyncio.gather(*tasks, return_exceptions=True)
                 return animator.won
     finally:
-        if animator is not None:
+        await credential.close()
+
+
+async def _run_conversation(
+    system_prompt: str,
+    disease: str,
+    patient_index: int,
+    tests: Sequence[Test],
+    *,
+    window: pygame.Surface | None = None,
+    screen: pygame.Surface | None = None,
+) -> ConversationResult:
+    while True:
+        animator = PatientAnimator(patient_index, window=window, screen=screen)
+        animator._ready = False
+        stop = asyncio.Event()
+        animation = asyncio.create_task(animator.run(stop))
+        session = asyncio.create_task(_conversation_session(system_prompt, disease, patient_index, tests, animator, stop))
+        try:
+            done, pending = await asyncio.wait({animation, session}, return_when=asyncio.FIRST_COMPLETED)
+            if session in done:
+                try:
+                    session.result()
+                except (AzureError, WebSocketException, OSError, TimeoutError, sd.PortAudioError, RealtimeSessionError) as error:
+                    print(f"Consultation unavailable: {error}")
+                    if not animator.won and not stop.is_set():
+                        animator.close_test_result()
+                        animator.show_error("Check Azure sign-in, network and audio output, then retry.")
+                        await animation
+            if animation in done:
+                animation.result()
+            if animator.quit_requested:
+                return ConversationResult.QUIT
+            if animator.won:
+                return ConversationResult.SOLVED
+            if not animator.retry_requested:
+                return ConversationResult.RETURNED
+        finally:
+            stop.set()
+            animator._push_to_talk.clear()
+            for task in (session, animation):
+                task.cancel()
+            await asyncio.gather(session, animation, return_exceptions=True)
             animator.close()
-        credential.close()
 
 
-def strat_conversation(
+def start_consultation(
     system_prompts: str | Sequence[str],
     disease: str,
     patient_type: PatientType,
@@ -1462,8 +1624,7 @@ def strat_conversation(
     *,
     window: pygame.Surface | None = None,
     screen: pygame.Surface | None = None,
-) -> bool:
-    """Start a patient conversation with diagnostic tools and result popups."""
+) -> ConversationResult:
     try:
         return asyncio.run(
             _run_conversation(
@@ -1477,7 +1638,20 @@ def strat_conversation(
         )
     except KeyboardInterrupt:
         print("\nConversation ended.")
-        return False
+        return ConversationResult.RETURNED
+
+
+def strat_conversation(
+    system_prompts: str | Sequence[str],
+    disease: str,
+    patient_type: PatientType,
+    tests: Sequence[Test],
+    *,
+    window: pygame.Surface | None = None,
+    screen: pygame.Surface | None = None,
+) -> bool:
+    """Start a patient conversation with diagnostic tools and result popups."""
+    return start_consultation(system_prompts, disease, patient_type, tests, window=window, screen=screen) == ConversationResult.SOLVED
 
 
 if __name__ == "__main__":
