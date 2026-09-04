@@ -1,0 +1,20 @@
+Create a production-ready transparent pixel-art sprite atlas for the patient in
+the first reference image. Match the crisp modern chibi pixel-art rendering,
+outline weight, lighting, and proportions of the clinician in the second
+reference image.
+
+Layout exactly 16 isolated full-body front-view sprites in a strict 4-column by
+4-row grid with equal square cells:
+
+- Row 1: subtle idle breathing phases.
+- Row 2: natural talking gesture phases.
+- Row 3: worried, hurt, or unwell phases appropriate to the patient.
+- Row 4: relieved and happy phases.
+
+Preserve the patient's age, identity, hair, clothing, colors, symptoms, and
+medical aids in every cell. Keep every figure at the same scale, centered
+horizontally, and with feet aligned to the same baseline in each cell.
+
+Use a transparent background only. Include no title, labels, letters, numbers,
+borders, grid lines, loose props, shadows, back views, side views, scenery,
+cropped body parts, or extra figures.

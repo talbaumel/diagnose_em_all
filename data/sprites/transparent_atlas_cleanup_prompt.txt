@@ -1,0 +1,10 @@
+Clean this existing 4-column by 4-row pixel-art character sprite atlas for
+production use. Preserve all 16 character sprites, their identity, poses,
+clothing, medical details, scale, positions, and cell layout exactly.
+
+Remove every white, gray, black, colored, gradient, or textured background and
+all colored glitch pixels, halos, decorative particles, shadows, and edge
+artifacts. Make every pixel between and around the 16 characters fully
+transparent, including the entire outer edge of the image. Keep crisp pixel-art
+edges and complete bodies. Add no text, borders, grid lines, scenery, or new
+objects. Output a true transparent PNG with only the 16 isolated sprites.

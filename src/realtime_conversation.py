@@ -14,11 +14,13 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import math
 import re
 import threading
 import time
-from collections.abc import AsyncIterator, Sequence
-from contextlib import asynccontextmanager
+from collections import deque
+from collections.abc import AsyncIterator, Iterator, Sequence
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -40,11 +42,122 @@ REALTIME_CONNECT_ATTEMPTS = 3
 SAMPLE_RATE = 24_000
 CHANNELS = 1
 BLOCK_DURATION_MS = 100
-ANIMATION_FPS = 8
+ANIMATION_FPS = 6
 RELIEVED_DURATION_SECONDS = 5
 PROJECT_ROOT = Path(__file__).parents[1]
 PATIENT_SPRITES_DIR = PROJECT_ROOT / "data" / "sprites" / "patients"
+PLAYER_SPRITE_SHEET = PROJECT_ROOT / "data" / "sprites" / "players" / "dr_ash.png"
+PLAYER_FRAME_SIZE = (128, 200)
+CONSULTATION_CHARACTER_HEIGHT = 124
+HOSPITAL_MAP_IMAGE = (
+    PROJECT_ROOT / "data" / "sprites" / "world" / "hospital_floor.png"
+)
+CONSULTATION_ROOM_IMAGE = (
+    PROJECT_ROOT / "data" / "sprites" / "world" / "consultation_room.png"
+)
+WORLD_DISPLAY_SIZE = (480, 374)
+SCREEN_SIZE = (480, 480)
+WINDOW_SIZE = (720, 720)
 IMAGE_SUFFIXES = {".bmp", ".gif", ".jpeg", ".jpg", ".png", ".webp"}
+UI_INK = (20, 32, 38)
+UI_PANEL = (22, 43, 46)
+UI_PAPER = (247, 249, 244)
+UI_MINT = (193, 231, 215)
+UI_TEAL = (52, 132, 121)
+UI_CORAL = (238, 105, 82)
+UI_GOLD = (244, 184, 72)
+UI_MUTED = (127, 151, 146)
+UI_WHITE = (255, 255, 251)
+SCENE_FADE_SECONDS = 0.28
+SCENE_EXIT_FADE_SECONDS = 0.35
+
+
+def extract_character(frame: pygame.Surface) -> pygame.Surface:
+    frame = frame.convert_alpha()
+    width, height = frame.get_size()
+    pending: deque[tuple[int, int]] = deque()
+    for horizontal in range(width):
+        pending.extend(((horizontal, 0), (horizontal, height - 1)))
+    for vertical in range(height):
+        pending.extend(((0, vertical), (width - 1, vertical)))
+
+    visited: set[tuple[int, int]] = set()
+    background: set[tuple[int, int]] = set()
+    while pending:
+        position = pending.popleft()
+        if position in visited:
+            continue
+        visited.add(position)
+        red, green, blue, _ = frame.get_at(position)
+        if max(red, green, blue) < 175 or max(red, green, blue) - min(
+            red, green, blue
+        ) > 55:
+            continue
+        background.add(position)
+        horizontal, vertical = position
+        for neighbor in (
+            (horizontal - 1, vertical),
+            (horizontal + 1, vertical),
+            (horizontal, vertical - 1),
+            (horizontal, vertical + 1),
+        ):
+            if 0 <= neighbor[0] < width and 0 <= neighbor[1] < height:
+                pending.append(neighbor)
+
+    for position in background:
+        color = frame.get_at(position)
+        frame.set_at(position, (*color[:3], 0))
+
+    components = pygame.mask.from_surface(frame, threshold=16).connected_components()
+    if not components:
+        return frame
+    character_mask = max(components, key=lambda component: component.count())
+    alpha_mask = character_mask.to_surface(
+        setcolor=(255, 255, 255, 255),
+        unsetcolor=(255, 255, 255, 0),
+    )
+    frame.blit(alpha_mask, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
+    character_bounds = character_mask.get_bounding_rects()[0]
+    return frame.subsurface(character_bounds).copy()
+
+
+def normalize_character_frames(
+    frames: Sequence[pygame.Surface],
+    target_height: int,
+    source_size: tuple[int, int] | None = None,
+) -> tuple[pygame.Surface, ...]:
+    if not frames:
+        raise ValueError("At least one character frame is required")
+
+    source_width = max(frame.get_width() for frame in frames)
+    source_height = max(frame.get_height() for frame in frames)
+    if source_size is not None:
+        source_width, source_height = source_size
+    scale = target_height / source_height
+    canvas_size = (max(1, round(source_width * scale)), target_height)
+
+    normalized = []
+    for frame in frames:
+        scaled = pygame.transform.scale(
+            frame,
+            (
+                max(1, round(frame.get_width() * scale)),
+                max(1, round(frame.get_height() * scale)),
+            ),
+        )
+        canvas = pygame.Surface(canvas_size, pygame.SRCALPHA)
+        canvas.blit(scaled, scaled.get_rect(midbottom=(canvas_size[0] // 2, target_height)))
+        normalized.append(canvas)
+    return tuple(normalized)
+
+
+def animation_frame(
+    frames: Sequence[pygame.Surface],
+    animation_time: float,
+    frames_per_second: float,
+) -> pygame.Surface:
+    frame_index = math.floor(animation_time * frames_per_second) % len(frames)
+    return frames[frame_index]
 
 
 class PatientType(str, Enum):
@@ -59,6 +172,21 @@ class PatientType(str, Enum):
     ELDERLY_WITH_BACK_PAIN = "Elderly with Back Pain"
     SLEEP_DEPRIVED_WORKER = "Sleep-Deprived Worker"
     ECCENTRIC_NEIGHBOR = "Eccentric Neighbor"
+
+
+PATIENT_VOICES = {
+    PatientType.COMMON_COLD_KID: "echo",
+    PatientType.STOMACHACHE_TEEN: "coral",
+    PatientType.MIGRAINE_SUFFERER: "echo",
+    PatientType.ALLERGIES_PATIENT: "coral",
+    PatientType.SPRAINED_ANKLE_ATHLETE: "echo",
+    PatientType.ANXIOUS_ADULT: "coral",
+    PatientType.FEVERISH_PATIENT: "echo",
+    PatientType.RASH_PATIENT: "echo",
+    PatientType.ELDERLY_WITH_BACK_PAIN: "echo",
+    PatientType.SLEEP_DEPRIVED_WORKER: "echo",
+    PatientType.ECCENTRIC_NEIGHBOR: "echo",
+}
 
 
 @dataclass(frozen=True)
@@ -98,14 +226,86 @@ PATIENT_SPRITE_SHEETS = (
     "10_sleep_deprived_worker.png",
     "11_eccentric_neighbor.png",
 )
+PATIENT_FRAME_COUNTS = (4, 4, 4, 4, 3, 4, 4, 4, 4, 4, 4)
+PATIENT_FRAME_PADDING = 12
 SPRITE_GRID_LEFT = 73
 SPRITE_GRID_RIGHT = 266
-STATE_BOUNDS = {
+LOWER_ALIGNED_STATE_BOUNDS = {
     "idle": (288, 349),
     "talking": (350, 414),
     "worried": (415, 477),
     "relieved": (478, 542),
 }
+UPPER_ALIGNED_STATE_BOUNDS = {
+    "idle": (269, 336),
+    "talking": (337, 403),
+    "worried": (404, 470),
+    "relieved": (471, 537),
+}
+PATIENT_SPRITE_GRID_BOUNDS = ((SPRITE_GRID_LEFT, SPRITE_GRID_RIGHT),) * 10 + (
+    (67, 267),
+)
+PATIENT_STATE_BOUNDS = (
+    (LOWER_ALIGNED_STATE_BOUNDS,) * 5
+    + (UPPER_ALIGNED_STATE_BOUNDS,) * 5
+    + (
+        {
+            "idle": (250, 325),
+            "talking": (326, 401),
+            "worried": (403, 477),
+            "relieved": (479, 553),
+        },
+    )
+)
+PATIENT_ATLAS_STATE_BOUNDS = {
+    "idle": (0, 256),
+    "talking": (256, 512),
+    "worried": (512, 768),
+    "relieved": (768, 1024),
+}
+PATIENT_FULL_BODY_FALLBACK_BOUNDS = {
+    2: (118, 286),
+    5: (105, 276),
+}
+
+
+def patient_sprite_layout(
+    patient_index: int,
+) -> tuple[
+    Path,
+    tuple[int, int],
+    dict[str, tuple[int, int]],
+    int,
+    int,
+]:
+    legacy_path = PATIENT_SPRITES_DIR / PATIENT_SPRITE_SHEETS[patient_index]
+    atlas_path = legacy_path.with_name(f"{legacy_path.stem}_atlas.png")
+    if atlas_path.is_file():
+        return (
+            atlas_path,
+            (0, 1024),
+            PATIENT_ATLAS_STATE_BOUNDS,
+            4,
+            0,
+        )
+
+    fallback_bounds = PATIENT_FULL_BODY_FALLBACK_BOUNDS.get(patient_index)
+    if fallback_bounds is not None:
+        return (
+            legacy_path,
+            (60, 220),
+            {state: fallback_bounds for state in PATIENT_ATLAS_STATE_BOUNDS},
+            1,
+            0,
+        )
+
+    return (
+        legacy_path,
+        PATIENT_SPRITE_GRID_BOUNDS[patient_index],
+        PATIENT_STATE_BOUNDS[patient_index],
+        PATIENT_FRAME_COUNTS[patient_index],
+        PATIENT_FRAME_PADDING,
+    )
 
 
 def _is_inactive_cancellation(error: dict[str, Any]) -> bool:
@@ -177,6 +377,67 @@ def _test_tools(tests: Sequence[Test]) -> tuple[list[dict[str, Any]], dict[str, 
     return tools, tests_by_tool
 
 
+def _input_device_candidates() -> tuple[int | None, ...]:
+    candidates: list[int | None] = [None]
+    try:
+        devices = sd.query_devices()
+        default_input = sd.default.device[0]
+    except sd.PortAudioError:
+        return tuple(candidates)
+
+    if isinstance(default_input, int) and default_input >= 0:
+        candidates.append(default_input)
+    candidates.extend(
+        index
+        for index, device in enumerate(devices)
+        if device["max_input_channels"] >= CHANNELS and index not in candidates
+    )
+    return tuple(candidates)
+
+
+@contextmanager
+def _microphone_stream(callback: Any) -> Iterator[sd.RawInputStream | None]:
+    stream: sd.RawInputStream | None = None
+    last_error: sd.PortAudioError | None = None
+    selected_device: int | None = None
+
+    for device in _input_device_candidates():
+        try:
+            stream = sd.RawInputStream(
+                device=device,
+                samplerate=SAMPLE_RATE,
+                blocksize=SAMPLE_RATE * BLOCK_DURATION_MS // 1000,
+                channels=CHANNELS,
+                dtype="int16",
+                callback=callback,
+            )
+            stream.start()
+            selected_device = device
+            break
+        except sd.PortAudioError as error:
+            last_error = error
+            if stream is not None:
+                stream.close()
+                stream = None
+
+    if stream is None:
+        print(
+            "\nMicrophone unavailable; continuing with typed input. On macOS, "
+            "enable Microphone access for Visual Studio Code - Insiders in "
+            "System Settings > Privacy & Security > Microphone, then restart it. "
+            f"Last PortAudio error: {last_error}"
+        )
+    elif selected_device is not None:
+        device = sd.query_devices(selected_device)
+        print(f"Recovered using microphone: {device['name']}")
+
+    try:
+        yield stream
+    finally:
+        if stream is not None:
+            stream.close()
+
+
 @asynccontextmanager
 async def _realtime_connection(
     headers: dict[str, str],
@@ -207,32 +468,140 @@ async def _realtime_connection(
 
 
 class PatientAnimator:
-    def __init__(self, patient_index: int) -> None:
+    def __init__(
+        self,
+        patient_index: int,
+        *,
+        window: pygame.Surface | None = None,
+        screen: pygame.Surface | None = None,
+    ) -> None:
         pygame.init()
         pygame.display.set_caption("Patient Conversation")
-        self._screen = pygame.display.set_mode((480, 480))
-        sheet_path = PATIENT_SPRITES_DIR / PATIENT_SPRITE_SHEETS[patient_index]
+        self._owns_display = window is None
+        self._window = (
+            pygame.display.set_mode(WINDOW_SIZE) if window is None else window
+        )
+        self._screen = pygame.Surface(SCREEN_SIZE) if screen is None else screen
+        (
+            sheet_path,
+            self._sprite_grid,
+            self._state_bounds,
+            self._frame_count,
+            self._frame_padding,
+        ) = patient_sprite_layout(patient_index)
         self._sheet = pygame.image.load(str(sheet_path)).convert_alpha()
+        raw_patient_frames = {
+            state: tuple(
+                extract_character(self._frame(state, frame_index))
+                for frame_index in range(self._frame_count)
+            )
+            for state in self._state_bounds
+        }
+        patient_source_size = (
+            max(
+                frame.get_width()
+                for frames in raw_patient_frames.values()
+                for frame in frames
+            ),
+            max(
+                frame.get_height()
+                for frames in raw_patient_frames.values()
+                for frame in frames
+            ),
+        )
+        self._patient_frames = {
+            state: normalize_character_frames(
+                frames,
+                CONSULTATION_CHARACTER_HEIGHT,
+                patient_source_size,
+            )
+            for state, frames in raw_patient_frames.items()
+        }
+        self._player_sheet = pygame.image.load(str(PLAYER_SPRITE_SHEET)).convert_alpha()
+        raw_player_frames = {
+            row: tuple(
+                extract_character(
+                    self._player_sheet.subsurface(
+                        pygame.Rect(
+                            frame_index * PLAYER_FRAME_SIZE[0],
+                            row * PLAYER_FRAME_SIZE[1],
+                            *PLAYER_FRAME_SIZE,
+                        )
+                    ).copy()
+                )
+                for frame_index in range(4)
+            )
+            for row in range(2)
+        }
+        player_source_size = (
+            max(
+                frame.get_width()
+                for frames in raw_player_frames.values()
+                for frame in frames
+            ),
+            max(
+                frame.get_height()
+                for frames in raw_player_frames.values()
+                for frame in frames
+            ),
+        )
+        self._player_frames = {
+            row: normalize_character_frames(
+                frames,
+                CONSULTATION_CHARACTER_HEIGHT,
+                player_source_size,
+            )
+            for row, frames in raw_player_frames.items()
+        }
+        consultation_room = pygame.image.load(
+            str(CONSULTATION_ROOM_IMAGE)
+        ).convert()
+        crop_height = min(
+            consultation_room.get_height(),
+            round(
+                consultation_room.get_width()
+                * WORLD_DISPLAY_SIZE[1]
+                / WORLD_DISPLAY_SIZE[0]
+            ),
+        )
+        self._world = pygame.transform.smoothscale(
+            consultation_room.subsurface(
+                pygame.Rect(0, 0, consultation_room.get_width(), crop_height)
+            ),
+            WORLD_DISPLAY_SIZE,
+        )
+        self._patient_number = patient_index + 1
         self._state = "idle"
         self._relieved_until = 0.0
+        self._scene_started_at = time.monotonic()
         self._test_result: Test | None = None
         self._test_result_image: pygame.Surface | None = None
         self._evidence_closed = asyncio.Event()
         self._evidence_closed.set()
-        self._test_close_button = pygame.Rect(340, 35, 68, 28)
+        self._test_close_button = pygame.Rect(400, 48, 30, 30)
         self._won = False
         self._running = True
         self._push_to_talk = threading.Event()
+        self._microphone_available = True
         self._text_messages: asyncio.Queue[str] = asyncio.Queue()
         self._text_input = ""
         self._text_focused = False
-        self._text_input_rect = pygame.Rect(20, 435, 370, 34)
-        self._text_send_button = pygame.Rect(398, 435, 62, 34)
-        self._status_font = pygame.font.SysFont("Avenir Next", 18)
-        self._text_font = pygame.font.SysFont("Avenir Next", 16)
-        self._test_title_font = pygame.font.SysFont("Avenir Next", 18, bold=True)
-        self._test_result_font = pygame.font.SysFont("Avenir Next", 24, bold=True)
-        self._win_font = pygame.font.SysFont("Avenir Next", 42, bold=True)
+        self._text_input_rect = pygame.Rect(18, 424, 386, 40)
+        self._text_send_button = pygame.Rect(414, 424, 48, 40)
+        self._eyebrow_font = pygame.font.SysFont("Avenir Next", 10, bold=True)
+        self._case_font = pygame.font.SysFont("Avenir Next", 16, bold=True)
+        self._status_font = pygame.font.SysFont("Avenir Next", 11, bold=True)
+        self._text_font = pygame.font.SysFont("Avenir Next", 15)
+        self._test_title_font = pygame.font.SysFont("Avenir Next", 16, bold=True)
+        self._test_result_font = pygame.font.SysFont("Avenir Next", 18, bold=True)
+        self._win_font = pygame.font.SysFont("Avenir Next", 32, bold=True)
+
+    def _screen_position(self, window_position: tuple[int, int]) -> tuple[int, int]:
+        window_width, window_height = self._window.get_size()
+        return (
+            round(window_position[0] * SCREEN_SIZE[0] / window_width),
+            round(window_position[1] * SCREEN_SIZE[1] / window_height),
+        )
 
     @property
     def push_to_talk(self) -> bool:
@@ -249,6 +618,11 @@ class PatientAnimator:
     def set_talking(self, talking: bool) -> None:
         self._state = "talking" if talking else "idle"
 
+    def set_microphone_available(self, available: bool) -> None:
+        self._microphone_available = available
+        if not available:
+            self._push_to_talk.clear()
+
     def show_relieved(self) -> None:
         self._relieved_until = time.monotonic() + RELIEVED_DURATION_SECONDS
 
@@ -259,9 +633,20 @@ class PatientAnimator:
     def show_test_result(self, test: Test) -> None:
         self._test_result = test
         image_path = test.image_path
-        self._test_result_image = (
-            pygame.image.load(str(image_path)).convert_alpha() if image_path else None
-        )
+        self._test_result_image = None
+        if image_path:
+            image = pygame.image.load(str(image_path)).convert_alpha()
+            max_dimension = max(image.get_size())
+            if max_dimension > 512:
+                scale = 512 / max_dimension
+                image = pygame.transform.smoothscale(
+                    image,
+                    (
+                        round(image.get_width() * scale),
+                        round(image.get_height() * scale),
+                    ),
+                )
+            self._test_result_image = extract_character(image)
         self._push_to_talk.clear()
         self._evidence_closed.clear()
 
@@ -297,10 +682,21 @@ class PatientAnimator:
         return self._state
 
     def _frame(self, state: str, frame_index: int) -> pygame.Surface:
-        grid_width = SPRITE_GRID_RIGHT - SPRITE_GRID_LEFT
-        left = SPRITE_GRID_LEFT + round(frame_index * grid_width / 4)
-        right = SPRITE_GRID_LEFT + round((frame_index + 1) * grid_width / 4)
-        top, bottom = STATE_BOUNDS[state]
+        grid_left, grid_right = self._sprite_grid
+        grid_width = grid_right - grid_left
+        left = max(
+            0,
+            grid_left
+            + round(frame_index * grid_width / self._frame_count)
+            - self._frame_padding,
+        )
+        right = min(
+            self._sheet.get_width(),
+            grid_left
+            + round((frame_index + 1) * grid_width / self._frame_count)
+            + self._frame_padding,
+        )
+        top, bottom = self._state_bounds[state]
         rectangle = pygame.Rect(
             left,
             top,
@@ -309,28 +705,410 @@ class PatientAnimator:
         )
         return self._sheet.subsurface(rectangle)
 
-    def _centered_frame(self, state: str, frame_index: int) -> pygame.Surface:
-        frame = self._frame(state, frame_index)
-        character_mask = pygame.mask.from_threshold(
-            frame,
-            pygame.Color(0, 0, 0),
-            threshold=pygame.Color(165, 165, 165, 255),
+    def _centered_frame(self, state: str, animation_time: float) -> pygame.Surface:
+        return animation_frame(
+            self._patient_frames[state],
+            animation_time,
+            ANIMATION_FPS,
         )
-        bounds = character_mask.get_bounding_rects()
-        if not bounds:
-            return frame
 
-        character_bounds = bounds[0]
-        for rectangle in bounds[1:]:
-            character_bounds.union_ip(rectangle)
-        character_bounds.inflate_ip(4, 4)
-        character_bounds = character_bounds.clip(frame.get_rect())
-        return frame.subsurface(character_bounds)
+    def _player_frame(self, animation_time: float) -> pygame.Surface:
+        row = 1 if self.push_to_talk else 0
+        return animation_frame(
+            self._player_frames[row],
+            animation_time,
+            ANIMATION_FPS,
+        )
+
+    def _status(self, state: str) -> tuple[str, tuple[int, int, int]]:
+        if self.won:
+            return "CASE SOLVED", UI_MINT
+        if self.evidence_open:
+            return "EVIDENCE", UI_GOLD
+        if self._text_focused:
+            return "TYPING", UI_MINT
+        if self.push_to_talk:
+            return "LISTENING", UI_CORAL
+        if state == "talking":
+            return "PATIENT SPEAKING", UI_MINT
+        if not self._microphone_available:
+            return "TEXT MODE", UI_GOLD
+        return "READY", UI_MINT
+
+    def _draw_header(self, state: str) -> None:
+        header = pygame.Surface((SCREEN_SIZE[0], 64), pygame.SRCALPHA)
+        header.fill((*UI_INK, 226))
+        self._screen.blit(header, (0, 0))
+        pygame.draw.rect(self._screen, UI_CORAL, (0, 0, SCREEN_SIZE[0], 3))
+
+        icon = pygame.Rect(16, 14, 34, 34)
+        pygame.draw.rect(self._screen, UI_CORAL, icon, border_radius=6)
+        pygame.draw.rect(self._screen, UI_WHITE, (29, 20, 8, 22), border_radius=2)
+        pygame.draw.rect(self._screen, UI_WHITE, (23, 27, 20, 8), border_radius=2)
+
+        eyebrow = self._eyebrow_font.render(
+            f"CASE {self._patient_number:02d}",
+            True,
+            UI_GOLD,
+        )
+        patient_name = self._case_font.render("PATIENT ENCOUNTER", True, UI_WHITE)
+        self._screen.blit(eyebrow, (59, 12))
+        self._screen.blit(patient_name, (59, 28))
+
+        status_text, status_color = self._status(state)
+        rendered_status = self._status_font.render(status_text, True, status_color)
+        status_width = rendered_status.get_width() + 30
+        status_rect = pygame.Rect(464 - status_width, 18, status_width, 28)
+        pygame.draw.rect(
+            self._screen,
+            (11, 25, 29),
+            status_rect,
+            border_radius=14,
+        )
+        pygame.draw.circle(
+            self._screen,
+            status_color,
+            (status_rect.x + 13, status_rect.centery),
+            4
+            + (
+                round((math.sin(time.monotonic() * 8) + 1) / 2)
+                if self.push_to_talk or state == "talking"
+                else 0
+            ),
+        )
+        self._screen.blit(
+            rendered_status,
+            rendered_status.get_rect(
+                midleft=(status_rect.x + 22, status_rect.centery)
+            ),
+        )
+
+    def _draw_shadow(self, center: tuple[int, int], width: int) -> None:
+        shadow_layer = pygame.Surface(SCREEN_SIZE, pygame.SRCALPHA)
+        outer = pygame.Rect(0, 0, width, 16)
+        outer.center = center
+        pygame.draw.ellipse(shadow_layer, (13, 31, 34, 54), outer)
+        pygame.draw.ellipse(
+            shadow_layer,
+            (13, 31, 34, 78),
+            outer.inflate(-16, -6),
+        )
+        self._screen.blit(shadow_layer, (0, 0))
+
+    def _draw_characters(
+        self,
+        patient_frame: pygame.Surface,
+        player_frame: pygame.Surface,
+        state: str,
+    ) -> None:
+        motion_time = time.monotonic()
+        patient_bob = round(math.sin(motion_time * 2.6) * 2)
+        player_bob = round(math.sin(motion_time * 2.2 + 1.4))
+        patient_rect = patient_frame.get_rect(midbottom=(330, 363 + patient_bob))
+        player_rect = player_frame.get_rect(midbottom=(122, 373 + player_bob))
+        if self.push_to_talk:
+            aura = pygame.Surface(SCREEN_SIZE, pygame.SRCALPHA)
+            pulse = (math.sin(motion_time * 7) + 1) / 2
+            for index in range(2):
+                phase = (pulse + index * 0.45) % 1
+                ring = pygame.Rect(0, 0, round(78 + phase * 28), round(18 + phase * 8))
+                ring.center = (player_rect.centerx, 366)
+                pygame.draw.ellipse(
+                    aura,
+                    (*UI_CORAL, round(125 * (1 - phase))),
+                    ring,
+                    width=2,
+                )
+            self._screen.blit(aura, (0, 0))
+        self._draw_shadow((patient_rect.centerx, patient_rect.bottom - 3), 78)
+        self._draw_shadow((player_rect.centerx, 369), 88)
+        self._screen.blit(patient_frame, patient_rect)
+        self._screen.blit(player_frame, player_rect)
+
+        if state == "talking":
+            bubble = pygame.Rect(patient_rect.right - 6, patient_rect.top - 14, 48, 28)
+            pygame.draw.rect(self._screen, UI_WHITE, bubble, border_radius=14)
+            pygame.draw.polygon(
+                self._screen,
+                UI_WHITE,
+                (
+                    (bubble.x + 7, bubble.bottom - 3),
+                    (bubble.x + 3, bubble.bottom + 7),
+                    (bubble.x + 17, bubble.bottom - 2),
+                ),
+            )
+            for index, offset in enumerate((0, 10, 20)):
+                dot_bob = round(math.sin(motion_time * 7 + index * 0.9) * 2)
+                pygame.draw.circle(
+                    self._screen,
+                    UI_TEAL,
+                    (bubble.x + 14 + offset, bubble.centery + dot_bob),
+                    3,
+                )
+
+    def _draw_send_icon(self) -> None:
+        center_x, center_y = self._text_send_button.center
+        pygame.draw.line(
+            self._screen,
+            UI_WHITE,
+            (center_x - 8, center_y),
+            (center_x + 7, center_y),
+            3,
+        )
+        pygame.draw.polygon(
+            self._screen,
+            UI_WHITE,
+            (
+                (center_x + 10, center_y),
+                (center_x + 2, center_y - 7),
+                (center_x + 2, center_y + 7),
+            ),
+        )
+
+    def _draw_console(self, state: str) -> None:
+        pygame.draw.rect(self._screen, UI_PANEL, (0, 374, 480, 106))
+        pygame.draw.rect(self._screen, UI_TEAL, (0, 374, 480, 3))
+        pygame.draw.rect(self._screen, UI_CORAL, (0, 374, 92, 3))
+
+        label = self._eyebrow_font.render("YOUR RESPONSE", True, UI_MUTED)
+        self._screen.blit(label, (18, 391))
+        status_text, status_color = self._status(state)
+        compact_status = self._status_font.render(status_text, True, status_color)
+        status_x = 462 - compact_status.get_width()
+        pygame.draw.circle(self._screen, status_color, (status_x - 10, 397), 3)
+        self._screen.blit(compact_status, (status_x, 390))
+
+        input_border = UI_CORAL if self._text_focused else (91, 119, 116)
+        pygame.draw.rect(
+            self._screen,
+            UI_PAPER,
+            self._text_input_rect,
+            border_radius=5,
+        )
+        pygame.draw.rect(
+            self._screen,
+            input_border,
+            self._text_input_rect,
+            width=2,
+            border_radius=5,
+        )
+        input_text = self._text_input or "Message the patient..."
+        input_color = UI_INK if self._text_input else (104, 123, 120)
+        rendered_input = self._text_font.render(input_text, True, input_color)
+        input_area = self._text_input_rect.inflate(-18, -8)
+        input_x = input_area.x
+        if rendered_input.get_width() > input_area.width:
+            input_x = input_area.right - rendered_input.get_width()
+        previous_clip = self._screen.get_clip()
+        self._screen.set_clip(input_area)
+        input_rect = rendered_input.get_rect(midleft=(input_x, input_area.centery))
+        self._screen.blit(rendered_input, input_rect)
+        if (
+            self._text_focused
+            and self._text_input
+            and int(time.monotonic() * 2) % 2 == 0
+        ):
+            cursor_x = min(input_rect.right + 2, input_area.right)
+            pygame.draw.line(
+                self._screen,
+                UI_CORAL,
+                (cursor_x, input_area.y + 3),
+                (cursor_x, input_area.bottom - 3),
+                2,
+            )
+        self._screen.set_clip(previous_clip)
+
+        mouse_position = self._screen_position(pygame.mouse.get_pos())
+        send_color = (
+            (248, 126, 101)
+            if self._text_send_button.collidepoint(mouse_position)
+            else UI_CORAL
+        )
+        pygame.draw.rect(
+            self._screen,
+            send_color,
+            self._text_send_button,
+            border_radius=5,
+        )
+        self._draw_send_icon()
+
+    def _draw_scene_fade(self) -> None:
+        now = time.monotonic()
+        intro_progress = (now - self._scene_started_at) / SCENE_FADE_SECONDS
+        intro_alpha = 0
+        if intro_progress < 1:
+            intro_alpha = round(255 * (1 - max(0.0, intro_progress)) ** 2)
+
+        exit_alpha = 0
+        if self.won:
+            remaining = self._relieved_until - now
+            if 0 <= remaining < SCENE_EXIT_FADE_SECONDS:
+                progress = 1 - remaining / SCENE_EXIT_FADE_SECONDS
+                exit_alpha = round(255 * progress * progress)
+
+        alpha = max(intro_alpha, exit_alpha)
+        if alpha:
+            overlay = pygame.Surface(SCREEN_SIZE, pygame.SRCALPHA)
+            overlay.fill((*UI_INK, alpha))
+            self._screen.blit(overlay, (0, 0))
+
+    def _wrapped_lines(
+        self,
+        text: str,
+        font: pygame.font.Font,
+        max_width: int,
+    ) -> list[str]:
+        words = text.split()
+        lines: list[str] = []
+        current = ""
+        for word in words:
+            candidate = f"{current} {word}".strip()
+            if current and font.size(candidate)[0] > max_width:
+                lines.append(current)
+                current = word
+            else:
+                current = candidate
+        if current:
+            lines.append(current)
+        return lines
+
+    def _draw_evidence(self) -> None:
+        if self._test_result is None:
+            return
+
+        overlay = pygame.Surface(SCREEN_SIZE, pygame.SRCALPHA)
+        overlay.fill((8, 20, 23, 166))
+        self._screen.blit(overlay, (0, 0))
+
+        shadow = pygame.Surface(SCREEN_SIZE, pygame.SRCALPHA)
+        pygame.draw.rect(
+            shadow,
+            (4, 14, 16, 95),
+            (34, 38, 420, 400),
+            border_radius=8,
+        )
+        self._screen.blit(shadow, (0, 0))
+        popup = pygame.Rect(28, 30, 424, 400)
+        pygame.draw.rect(self._screen, UI_PAPER, popup, border_radius=8)
+        pygame.draw.rect(
+            self._screen,
+            UI_PANEL,
+            (popup.x, popup.y, popup.width, 66),
+            border_top_left_radius=8,
+            border_top_right_radius=8,
+        )
+        pygame.draw.rect(self._screen, UI_GOLD, (popup.x, popup.y, 6, 66))
+
+        eyebrow = self._eyebrow_font.render("EVIDENCE REPORT", True, UI_GOLD)
+        title = self._test_title_font.render(
+            self._test_result.description.upper(),
+            True,
+            UI_WHITE,
+        )
+        self._screen.blit(eyebrow, (48, 44))
+        self._screen.blit(title, (48, 61))
+        pygame.draw.rect(
+            self._screen,
+            (42, 66, 68),
+            self._test_close_button,
+            border_radius=5,
+        )
+        pygame.draw.line(
+            self._screen,
+            UI_WHITE,
+            (408, 57),
+            (422, 70),
+            2,
+        )
+        pygame.draw.line(
+            self._screen,
+            UI_WHITE,
+            (422, 57),
+            (408, 70),
+            2,
+        )
+
+        content = pygame.Rect(48, 116, 384, 286)
+        pygame.draw.rect(self._screen, (232, 241, 235), content, border_radius=6)
+        if self._test_result_image:
+            image = self._test_result_image
+            scale = min(
+                content.width * 0.88 / image.get_width(),
+                content.height * 0.78 / image.get_height(),
+            )
+            image = pygame.transform.smoothscale(
+                image,
+                (
+                    round(image.get_width() * scale),
+                    round(image.get_height() * scale),
+                ),
+            )
+            self._screen.blit(image, image.get_rect(center=content.center))
+        else:
+            finding = self._eyebrow_font.render("CLINICAL FINDING", True, UI_TEAL)
+            self._screen.blit(finding, (70, 145))
+            lines = self._wrapped_lines(
+                self._test_result.results,
+                self._test_result_font,
+                content.width - 44,
+            )
+            line_height = self._test_result_font.get_linesize() + 5
+            start_y = 180
+            for index, line in enumerate(lines):
+                rendered_line = self._test_result_font.render(line, True, UI_INK)
+                self._screen.blit(rendered_line, (70, start_y + index * line_height))
+
+    def _draw_win(self) -> None:
+        overlay = pygame.Surface(SCREEN_SIZE, pygame.SRCALPHA)
+        overlay.fill((8, 20, 23, 138))
+        self._screen.blit(overlay, (0, 0))
+        panel = pygame.Rect(62, 112, 356, 220)
+        pygame.draw.rect(self._screen, UI_PAPER, panel, border_radius=8)
+        pygame.draw.rect(self._screen, UI_TEAL, (62, 112, 356, 6))
+        pygame.draw.circle(self._screen, UI_TEAL, (240, 175), 30)
+        pygame.draw.lines(
+            self._screen,
+            UI_WHITE,
+            False,
+            ((226, 175), (236, 185), (256, 163)),
+            5,
+        )
+        eyebrow = self._eyebrow_font.render(
+            "DIAGNOSIS CONFIRMED",
+            True,
+            UI_TEAL,
+        )
+        win_text = self._win_font.render("CASE CLOSED", True, UI_INK)
+        self._screen.blit(eyebrow, eyebrow.get_rect(center=(240, 225)))
+        self._screen.blit(win_text, win_text.get_rect(center=(240, 260)))
+        detail = self._text_font.render(
+            "Patient stabilized. Excellent work.",
+            True,
+            (83, 104, 101),
+        )
+        self._screen.blit(detail, detail.get_rect(center=(240, 300)))
+
+    def draw(self, animation_time: float = 0.0) -> None:
+        state = self._current_state()
+        patient_frame = self._centered_frame(state, animation_time)
+        player_frame = self._player_frame(animation_time)
+
+        self._screen.fill(UI_PAPER)
+        self._screen.blit(self._world, (0, 0))
+        self._draw_characters(patient_frame, player_frame, state)
+        self._draw_header(state)
+        self._draw_console(state)
+        if self._test_result and not self.won:
+            self._draw_evidence()
+        if self.won:
+            self._draw_win()
+        self._draw_scene_fade()
+
+        pygame.transform.scale(self._screen, self._window.get_size(), self._window)
+        pygame.display.flip()
 
     async def run(self, stop: asyncio.Event) -> None:
-        frame_index = 0
-        frame_interval = 1 / ANIMATION_FPS
-        next_frame = time.monotonic()
+        animation_started_at = time.monotonic()
 
         while not stop.is_set() and self._running:
             for event in pygame.event.get():
@@ -349,7 +1127,7 @@ class PatientAnimator:
                 elif event.type == pygame.KEYDOWN and event.key in (
                     pygame.K_LSHIFT,
                     pygame.K_RSHIFT,
-                ):
+                ) and self._microphone_available:
                     self._push_to_talk.set()
                 elif event.type == pygame.KEYUP and event.key in (
                     pygame.K_LSHIFT,
@@ -360,115 +1138,28 @@ class PatientAnimator:
                     event.type == pygame.MOUSEBUTTONUP
                     and event.button == 1
                 ):
-                    if self._text_input_rect.collidepoint(event.pos):
+                    screen_position = self._screen_position(event.pos)
+                    if self._text_input_rect.collidepoint(screen_position):
                         self._set_text_focus(True)
-                    elif self._text_send_button.collidepoint(event.pos):
+                    elif self._text_send_button.collidepoint(screen_position):
                         self._submit_text()
                     elif (
                         self._test_result
-                        and self._test_close_button.collidepoint(event.pos)
+                        and self._test_close_button.collidepoint(screen_position)
                     ):
                         self.close_test_result()
                     else:
                         self._set_text_focus(False)
 
-            now = time.monotonic()
-            if now >= next_frame:
-                frame_index = (frame_index + 1) % 4
-                next_frame = now + frame_interval
-
-            state = self._current_state()
-            frame = self._centered_frame(state, frame_index)
-            self._screen.fill((238, 244, 241))
-            self._screen.blit(frame, frame.get_rect(center=(240, 235)))
-
-            if self._test_result and not self.won:
-                popup = pygame.Rect(30, 25, 420, 365)
-                pygame.draw.rect(self._screen, (255, 255, 255), popup)
-                pygame.draw.rect(self._screen, (55, 101, 79), popup, width=2)
-                title = self._test_title_font.render(
-                    self._test_result.description.upper(), True, (55, 101, 79)
-                )
-                close = self._status_font.render("Close", True, (255, 255, 255))
-                pygame.draw.rect(
-                    self._screen, (55, 101, 79), self._test_close_button
-                )
-                self._screen.blit(title, title.get_rect(center=(185, 50)))
-                self._screen.blit(
-                    close, close.get_rect(center=self._test_close_button.center)
-                )
-                if self._test_result_image:
-                    available_size = (380, 290)
-                    image = self._test_result_image
-                    scale = min(
-                        1.0,
-                        available_size[0] / image.get_width(),
-                        available_size[1] / image.get_height(),
-                    )
-                    if scale < 1.0:
-                        image = pygame.transform.smoothscale(
-                            image,
-                            (
-                                round(image.get_width() * scale),
-                                round(image.get_height() * scale),
-                            ),
-                        )
-                    self._screen.blit(image, image.get_rect(center=(240, 225)))
-                else:
-                    result = self._test_result_font.render(
-                        self._test_result.results, True, (31, 40, 36)
-                    )
-                    self._screen.blit(result, result.get_rect(center=(240, 210)))
-
-            if self.won:
-                status_text = "YOU WIN"
-                status = self._win_font.render(status_text, True, (33, 126, 76))
-            else:
-                status_text = (
-                    "EVIDENCE PAUSED"
-                    if self.evidence_open
-                    else "TYPING"
-                    if self._text_focused
-                    else "LISTENING"
-                    if self.push_to_talk
-                    else state.upper()
-                )
-                status = self._status_font.render(status_text, True, (55, 101, 79))
-            self._screen.blit(status, status.get_rect(center=(240, 410)))
-
-            input_border = (33, 126, 76) if self._text_focused else (138, 153, 146)
-            pygame.draw.rect(self._screen, (255, 255, 255), self._text_input_rect)
-            pygame.draw.rect(
-                self._screen, input_border, self._text_input_rect, width=2
-            )
-            input_text = self._text_input or "Type a message..."
-            input_color = (31, 40, 36) if self._text_input else (117, 128, 123)
-            rendered_input = self._text_font.render(input_text, True, input_color)
-            input_area = self._text_input_rect.inflate(-16, -8)
-            input_x = input_area.x
-            if rendered_input.get_width() > input_area.width:
-                input_x = input_area.right - rendered_input.get_width()
-            previous_clip = self._screen.get_clip()
-            self._screen.set_clip(input_area)
-            self._screen.blit(
-                rendered_input,
-                rendered_input.get_rect(midleft=(input_x, input_area.centery)),
-            )
-            self._screen.set_clip(previous_clip)
-
-            pygame.draw.rect(self._screen, (55, 101, 79), self._text_send_button)
-            send_text = self._text_font.render("Send", True, (255, 255, 255))
-            self._screen.blit(
-                send_text, send_text.get_rect(center=self._text_send_button.center)
-            )
-            pygame.display.flip()
+            self.draw(time.monotonic() - animation_started_at)
             await asyncio.sleep(1 / 60)
 
         stop.set()
 
     def close(self) -> None:
         pygame.key.stop_text_input()
-        pygame.quit()
+        if self._owns_display:
+            pygame.quit()
 
 
 async def _run_conversation(
@@ -476,7 +1167,10 @@ async def _run_conversation(
     disease: str,
     patient_index: int,
     tests: Sequence[Test],
-) -> None:
+    *,
+    window: pygame.Surface | None = None,
+    screen: pygame.Surface | None = None,
+) -> bool:
     credential = AzureCliCredential()
     animator: PatientAnimator | None = None
     test_tools, tests_by_tool = _test_tools(tests)
@@ -489,7 +1183,11 @@ async def _run_conversation(
         stop = asyncio.Event()
 
         async with _realtime_connection(headers) as websocket:
-            animator = PatientAnimator(patient_index)
+            animator = PatientAnimator(
+                patient_index,
+                window=window,
+                screen=screen,
+            )
             await websocket.send(
                 json.dumps(
                     {
@@ -534,7 +1232,9 @@ async def _run_conversation(
                                     },
                                 },
                                 "output": {
-                                    "voice": "alloy",
+                                    "voice": PATIENT_VOICES[
+                                        tuple(PatientType)[patient_index]
+                                    ],
                                     "format": {
                                         "type": "audio/pcm",
                                         "rate": SAMPLE_RATE,
@@ -580,23 +1280,19 @@ async def _run_conversation(
                     audio = b"\x00" * len(audio)
                 loop.call_soon_threadsafe(enqueue_audio, audio)
 
-            block_size = SAMPLE_RATE * BLOCK_DURATION_MS // 1000
             with (
-                sd.RawInputStream(
-                    samplerate=SAMPLE_RATE,
-                    blocksize=block_size,
-                    channels=CHANNELS,
-                    dtype="int16",
-                    callback=microphone_callback,
-                ),
+                _microphone_stream(microphone_callback) as input_stream,
                 sd.RawOutputStream(
                     samplerate=SAMPLE_RATE,
                     channels=CHANNELS,
                     dtype="int16",
                 ) as output_stream,
             ):
+                animator.set_microphone_available(input_stream is not None)
                 print(
                     "Conversation started. Diagnose the patient or press Ctrl+C."
+                    if input_stream is not None
+                    else "Conversation started in text-only mode."
                 )
 
                 async def send_microphone_audio() -> None:
@@ -736,12 +1432,14 @@ async def _run_conversation(
                                 f"Realtime API error: {error.get('message', error)}"
                             )
 
-                audio_sender = asyncio.create_task(send_microphone_audio())
                 text_sender = asyncio.create_task(send_text_messages())
                 receiver = asyncio.create_task(receive_events())
                 animation = asyncio.create_task(animator.run(stop))
+                tasks = {text_sender, receiver, animation}
+                if input_stream is not None:
+                    tasks.add(asyncio.create_task(send_microphone_audio()))
                 done, pending = await asyncio.wait(
-                    {audio_sender, text_sender, receiver, animation},
+                    tasks,
                     return_when=asyncio.FIRST_COMPLETED,
                 )
                 for task in pending:
@@ -749,6 +1447,7 @@ async def _run_conversation(
                 await asyncio.gather(*pending, return_exceptions=True)
                 for task in done:
                     task.result()
+                return animator.won
     finally:
         if animator is not None:
             animator.close()
@@ -760,19 +1459,25 @@ def strat_conversation(
     disease: str,
     patient_type: PatientType,
     tests: Sequence[Test],
-) -> None:
+    *,
+    window: pygame.Surface | None = None,
+    screen: pygame.Surface | None = None,
+) -> bool:
     """Start a patient conversation with diagnostic tools and result popups."""
     try:
-        asyncio.run(
+        return asyncio.run(
             _run_conversation(
                 _combine_prompts(system_prompts),
                 disease,
                 _patient_index(patient_type),
                 tests,
+                window=window,
+                screen=screen,
             )
         )
     except KeyboardInterrupt:
         print("\nConversation ended.")
+        return False
 
 
 if __name__ == "__main__":

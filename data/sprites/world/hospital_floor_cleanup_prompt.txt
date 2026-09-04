@@ -1,0 +1,33 @@
+Edit this exact top-down pixel-art hospital floor into a cleaner, more playable
+game map. Preserve the 1024x1024 canvas, camera angle, crisp pixel-art style,
+palette, central cross-shaped hallway, four room footprints, outer walls, and
+the exact positions of all four side doorways.
+
+Make every room visibly spacious and easy to navigate:
+
+- Top-left Pediatrics: keep only two beds against the upper wall, one compact
+  toy shelf, and a few toys at the perimeter. Remove the central play mat,
+  extra cabinets, carts, and large reception desk. Leave the center and lower
+  half as broad open floor.
+- Top-right Diagnostics Lab: keep essential machines and storage against the
+  upper and right walls plus one short lab bench. Remove the large central
+  island, stools, lower reception desk, and extra carts. Leave a broad open
+  center.
+- Bottom-left Patient Ward: keep two beds against the outer walls and one small
+  medical station. Remove extra beds, privacy screens, carts, cabinets, and the
+  large lower desk. Leave wide connected floor lanes through the whole room.
+- Bottom-right Pharmacy Lounge: keep pharmacy shelves and one compact counter
+  against the upper wall plus one sofa against the bottom wall. Remove the
+  extra couches, chairs, coffee table, side cabinets, and water cooler. Leave a
+  broad open center.
+
+Make each entrance unmistakable from the central vertical hallway: widen the
+visible opening without moving its center, use a bright teal threshold strip,
+an illuminated door frame, and a small inward-pointing floor chevron just
+inside the room. Keep the openings unobstructed with clear floor extending at
+least one character-width into each room.
+
+Use no text, labels, characters, people, arrows in the main hallway, UI,
+logos, perspective changes, new rooms, blocked doors, clutter piles, or loose
+objects in walking lanes. Do not alter the central hall width or room walls
+outside the doorway openings.
