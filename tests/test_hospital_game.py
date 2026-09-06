@@ -9,7 +9,7 @@ import pygame
 
 from src.hospital_game import HospitalNavigator, PLAYER_SPEED, PLAYER_START, HOSPITAL_ROOMS, load_patient_scenarios, start_hospital_game
 from src.game_ui import ChoiceMenu
-from src.game_progress import ProgressStore
+from src.game_progress import Progress, ProgressStore
 from src.realtime_conversation import ConversationResult
 
 
@@ -123,7 +123,7 @@ class HospitalFlowTests(unittest.TestCase):
         self.scenarios = load_patient_scenarios(sorted((root / "data/prompts").glob("*.json")))
         pygame.init()
         self.window = pygame.display.set_mode((720, 720))
-        directory = tempfile.TemporaryDirectory()
+        directory = tempfile.TemporaryDirectory(dir=Path(__file__).parent)
         self.addCleanup(directory.cleanup)
         self.save_path = Path(directory.name) / "progress.json"
         self.addCleanup(pygame.quit)
@@ -196,11 +196,104 @@ class HospitalFlowTests(unittest.TestCase):
             self.assertFalse(ProgressStore([self.scenarios[0].patient_type.value], self.save_path).load().diagnosed)
 
     def test_quitting_completed_review_saves_case_before_exiting(self):
-        with patch.object(HospitalNavigator, "run", return_value=self.scenarios[0]) as run, patch("src.hospital_game.start_consultation", return_value=ConversationResult.SOLVED_QUIT):
+        def consult(**kwargs):
+            kwargs["on_skill_score"](-4)
+            return ConversationResult.SOLVED_QUIT
+
+        with patch.object(HospitalNavigator, "run", return_value=self.scenarios[0]) as run, patch("src.hospital_game.start_consultation", side_effect=consult):
             start_hospital_game(self.scenarios[:1], save_path=self.save_path)
         self.assertEqual(run.call_count, 1)
         progress = ProgressStore([self.scenarios[0].patient_type.value], self.save_path).load()
         self.assertEqual(progress.diagnosed, {self.scenarios[0].patient_type.value})
+        self.assertEqual(progress.skill_scores, {self.scenarios[0].patient_type.value: -4})
+
+    def test_unsolved_outcomes_never_save_callback_score(self):
+        patient = self.scenarios[0]
+        for result in (ConversationResult.RETURNED, ConversationResult.QUIT):
+            with self.subTest(result=result):
+                def consult(**kwargs):
+                    kwargs["on_skill_score"](8)
+                    return result
+
+                with patch.object(HospitalNavigator, "run", side_effect=[patient, None]), patch(
+                    "src.hospital_game.start_consultation", side_effect=consult
+                ):
+                    start_hospital_game([patient], save_path=self.save_path)
+                progress = ProgressStore([patient.patient_type.value], self.save_path).load()
+                self.assertEqual(progress.diagnosed, set())
+                self.assertEqual(progress.skill_scores, {})
+
+    def test_scores_survive_navigator_recreation_and_later_cases(self):
+        patients = self.scenarios[:2]
+        scores = iter((7, -2))
+
+        def consult(**kwargs):
+            kwargs["on_skill_score"](next(scores))
+            return ConversationResult.SOLVED
+
+        with patch.object(HospitalNavigator, "run", side_effect=[*patients, None]), patch(
+            "src.hospital_game.start_consultation", side_effect=consult
+        ):
+            start_hospital_game(patients, save_path=self.save_path)
+        store = ProgressStore((patient.patient_type.value for patient in patients), self.save_path)
+        self.assertEqual(store.load().skill_scores,
+                         {patients[0].patient_type.value: 7, patients[1].patient_type.value: -2})
+        with patch.object(HospitalNavigator, "run", return_value=None):
+            start_hospital_game(patients, save_path=self.save_path)
+        self.assertEqual(store.load().skill_scores,
+                         {patients[0].patient_type.value: 7, patients[1].patient_type.value: -2})
+
+    def test_callback_is_optional_for_completed_cases_and_does_not_leak_between_visits(self):
+        patients = self.scenarios[:2]
+        calls = 0
+
+        def consult(**kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                kwargs["on_skill_score"](0)
+            return ConversationResult.SOLVED
+
+        with patch.object(HospitalNavigator, "run", side_effect=[*patients, None]), patch(
+            "src.hospital_game.start_consultation", side_effect=consult
+        ):
+            start_hospital_game(patients, save_path=self.save_path)
+        progress = ProgressStore((patient.patient_type.value for patient in patients), self.save_path).load()
+        self.assertEqual(progress.diagnosed, {patient.patient_type.value for patient in patients})
+        self.assertEqual(progress.skill_scores, {patients[0].patient_type.value: 0})
+
+    def test_reset_removes_completed_scores(self):
+        patient = self.scenarios[0]
+        store = ProgressStore([patient.patient_type.value], self.save_path)
+        store.save(Progress({patient.patient_type.value}, skill_scores={patient.patient_type.value: 6}))
+        visits = 0
+
+        def visit(navigator):
+            nonlocal visits
+            visits += 1
+            if visits == 1:
+                navigator.restart_requested = True
+            return None
+
+        with patch.object(HospitalNavigator, "run", visit):
+            start_hospital_game([patient], save_path=self.save_path)
+        self.assertEqual(visits, 2)
+        self.assertEqual(store.load(), Progress())
+
+    def test_invalid_callback_score_does_not_prevent_case_completion(self):
+        patient = self.scenarios[0]
+
+        def consult(**kwargs):
+            kwargs["on_skill_score"](True)
+            return ConversationResult.SOLVED_QUIT
+
+        with patch.object(HospitalNavigator, "run", return_value=patient), patch(
+            "src.hospital_game.start_consultation", side_effect=consult
+        ):
+            start_hospital_game([patient], save_path=self.save_path)
+        progress = ProgressStore([patient.patient_type.value], self.save_path).load()
+        self.assertEqual(progress.diagnosed, {patient.patient_type.value})
+        self.assertEqual(progress.skill_scores, {})
 
 if __name__ == "__main__":
     unittest.main()

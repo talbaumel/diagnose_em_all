@@ -72,7 +72,7 @@ python -m src.debug_example data/prompts/11_eccentric_neighbor.json
 - Move Dr. Ash through the hospital with the arrow keys or WASD.
 - Enter Pediatrics and the Diagnostics Lab through their corridor doors.
 - Approach a patient and press Enter when the patient is highlighted.
-- Interview the patient in the diagnosis battle and request configured tests.
+- Interview the patient in the diagnosis battle and request skills from the shared catalog.
 - Submit the correct diagnosis, discuss the care plan, then choose Finish Visit to complete the case.
 - Help patient 01 to unlock the Patient Ward.
 - Help patient 02 to unlock the Pharmacy Lounge.
@@ -87,7 +87,7 @@ During a diagnosis battle:
 - Click the text field to type, then press Enter or click Send.
 - Patient speech and your responses appear in the conversation transcript.
 - Scroll the transcript with the mouse wheel or Page Up / Page Down.
-- Ask the patient to perform one of the configured diagnostic tests.
+- Request a skill by voice or text. Review the interpreted skill and parameters, then explicitly confirm or cancel.
 - Scroll long evidence reports with the wheel, arrow keys, or Page Up / Page Down.
 - Close evidence with Enter, Escape, or its close button.
 - Escape leaves text focus first; otherwise it opens a return-to-hospital confirmation.
@@ -97,8 +97,9 @@ During a diagnosis battle:
 - Cancel or Escape returns to the conversation without submitting; your chat draft is preserved.
 - Incorrect submissions leave the case open so you can continue investigating or try again.
 - The stopwatch starts when the patient connection is ready and stops when you finish the visit, including care planning.
-- Click Tests Found or press F3 to review tests you have discovered by requesting them.
+- Click Tests Found or press F3 to review used skills, actual findings, and point rationales.
 - Click Care Plan or press F4 to add prescriptions, add referrals, or review recorded orders.
+- Click Skills or press F5 to browse the entire shared catalog for any patient. Use Up/Down, Page Up/Page Down, Home/End or the mouse wheel; Enter or click opens details and illustrated art. Details scroll independently. Enter or Draft Request fills the chat draft without sending it. Escape returns or closes.
 - After confirming a diagnosis, the Diagnose button becomes Finish Visit (also F2). Confirm to end the call and open the scorecard.
 
 Only an explicit diagnosis submission followed by Finish Visit can close a case.
@@ -141,7 +142,8 @@ Retrying starts a new consultation, not a recovered conversation.
 
 After Finish Visit, the realtime call closes and a scrollable review opens.
 The first screen shows a compact numerical overview: Tests discovered (for example,
-2/8) and all eight scores out of 100, followed by the detailed feedback.
+2/86), separate appropriate-use points, and all eight AI scores out of 100,
+followed by the detailed feedback.
 MAI-Thinking-1 scores the transcript on eight axes using a 0-5 rubric; the display
 multiplies each score by 20 (for example, 4 becomes 80/100). The axes have written
 feedback: clinical professionalism, warmth and pleasantness, empathy and listening,
@@ -151,6 +153,27 @@ overview. Axes with insufficient evidence receive 0/100 as a game scoring penalt
 the written feedback explains the lack of evidence rather than inventing observations.
 While scoring runs, values show Pending; a failed request shows Unavailable and Retry.
 This is AI-generated game feedback, not an assessment of real clinical competence.
+
+Deterministic **appropriate-use points** are displayed separately from these AI
+axes and remain available if the review service fails. The used-skills report and
+scorecard show each action's status, descriptive result, and scoring rationale.
+This score runs from **-20 to +20**, not a percentage. The default formula is
+`clamp(sum(action.points), -20, 20)`: indicated decisions earn +2, reasonable
+alternatives or low-burden baseline assessments +1, and unnecessary procedures -1.
+Only evidence disclosed or obtained before confirmation can justify an order;
+negative rule-out results can earn credit. A relevant-but-not-yet-supported order
+earns 0 rather than hindsight credit. Repeating it after learning more does not
+retroactively earn points.
+
+Overlapping components share a +2 clinical-goal budget and linked burdens are
+charged once. Distinct investigations such as influenza testing and SARS-CoV-2
+PCR remain independently scoreable. Duplicate, unavailable and cancelled actions
+earn 0; failed validation or missing evidence never completes a procedure.
+The unclamped running total retains all rewards and penalties, so reaching a
+display limit does not erase prior decisions. `ScoringConfig` in
+`src/diagnostic_skills.py` exposes the weights, goal budget and bounds; configurable
+limits stay inside -100..100 for save compatibility. These are authored
+educational-game rubrics, not clinically validated scoring rules.
 
 The report also shows elapsed consultation time and unique tests discovered out of
 the configured total, plus their names. Repeating a test does not increase discovery.
@@ -166,9 +189,10 @@ https://tabaumel-resource.services.ai.azure.com/mai/v1/chat/completions
 model: MAI-Thinking-1
 ```
 
-Image-only test results are represented by their configured paths, not uploaded
-images; the grader is instructed not to infer image contents. No raw audio is sent
-to the scoring endpoint. Transcripts and scorecards are not added to local saves.
+The skill engine provides descriptive text evidence, including an explicit
+description for the legacy thermometer; illustrations are not interpreted as
+patient findings or uploaded. No raw audio is sent to the scoring endpoint.
+Transcripts and detailed scorecards are not added to local saves.
 
 Scroll with the wheel, arrow keys, or Page Up / Page Down. Return to Hospital,
 Enter, and Escape wait until scoring finishes before allowing you to close the review.
@@ -193,7 +217,8 @@ Save locations:
 - Linux: `$XDG_DATA_HOME/diagnose_em_all/progress.json`, or
   `~/.local/share/diagnose_em_all/progress.json`
 
-Saves contain only patient identifiers, completion flags, and coordinates, not
+Saves contain patient identifiers, completion flags, coordinates, and optional
+completed-visit appropriate-use totals, not
 conversation transcripts, prompts, audio, or credentials. Invalid restored
 positions fall back to the hospital entrance. Corrupt or unsupported saves are
 preserved and reported; explicitly starting a New Game backs up such a file
@@ -273,6 +298,73 @@ Each patient has a JSON file in `data/prompts`. The file maps directly to the pa
 
 A test result can be plain text or an image path such as `data/sprites/tests/thermometer.png`.
 
+The existing per-patient tests remain authoritative results, not an availability
+filter. The universal catalog and explicit fictional case extensions live in
+`data/skills`: **86 skills** (68 illustrated entries plus 18 distinct legacy
+entries), with **946 explicitly authored simulated skill/case mappings** across
+the original eleven patients. These are fictional teaching outcomes, not
+clinically validated findings. Skills not supported by a
+case's specimen, target, consent or workflow report what is missing instead of
+inventing a normal finding. Advanced skills do not imply that new oncology,
+inherited-condition, recurrent-infection or chronic-diarrhea cases exist.
+
+### Universal skills and language routing
+
+The realtime model interprets both speech and typed requests through stable-ID
+function tools. Every case receives the same neutral descriptions, aliases, three
+example phrasings and parameter schemas. There is no fixed-sentence dispatcher
+and no patient-relevance or point information in the tool descriptions.
+Underspecified requests such as "blood tests" or "sequence it" require clarification.
+Negated, hypothetical, educational and mention-only requests must not invoke a
+procedure. As a second safeguard, **nothing executes or scores until you approve
+the interpreted action locally**. Cancel is the default; Tab/Left/Right changes
+selection, Enter confirms the selected button, and Escape cancels. Long details
+scroll. Misrecognitions can therefore be cancelled without a completed procedure.
+
+Complete tool batches are processed in order with one model continuation per
+batch. Replayed call IDs are ignored, incomplete/cancelled model responses do not
+execute, and repeated or overlapping procedures cannot farm points. Finish Visit
+waits while a skill proposal or evidence report is pending. History, diary review,
+pedigree and counseling skills require the relevant conversation/review, not just
+ordering the skill or making a counseling referral.
+
+The read-only `get_skill_context` tool returns indices for already-visible
+clinician/patient dialogue only, never hidden diagnoses, rubrics, or undisclosed
+findings. History/consent tools cite those indices; the backend checks the actual
+speaker, exchange and specific consent, including withdrawal. Existing sleep-diary
+and Epworth records remain available for the patient to discuss when asked.
+Evidence checks deliberately use conservative English patterns for this roster;
+unsupported or ambiguous phrasing must be clarified rather than supplied as a
+model-authored fact. Live paraphrase/consent behavior still needs the separate
+playtest.
+
+Catalog art is conceptual, never patient-specific diagnostic evidence. The
+original blue/ivory thermometer remains the authoritative legacy image. Viral
+metagenomic sequencing uses only the selected larger handheld nanopore
+illustration. Its nasal DNA, RNA and combined workflows have authored simulated
+results and are unnecessary for these simple current cases; DNA-only results never
+exclude RNA infection. Sequencing is simulated: there are no sequencing services, uploads,
+or real clinical orders. Microbiome profiling is research-only.
+
+### Deferred live playtest
+
+Automated protocol fixtures establish local guards, not the live model's ability
+to route natural language. Interactive speech/text testing is a separate task;
+do not start a second game while an existing instance is running. When ready:
+
+```bash
+.venv/bin/python -m src.debug_example data/prompts/07_feverish_patient.json
+# Entire existing roster:
+.venv/bin/python -m src.debug_example
+```
+
+1. Interview the feverish patient; paraphrase an appropriate request such as "check how hot I am", confirm temperature, and inspect text evidence and rationale.
+2. Browse all skills; request nasal viral metagenomic sequencing with an RNA-capable workflow (or noncontrast chest CT), confirm it, and inspect the simulated result and penalty.
+3. Ask "blood tests" and "sequence it"; expect clarification, not execution. Supply the missing specimen/target when appropriate.
+4. Try a negated request, a hypothetical and an educational question. No execution should occur; cancel any erroneous proposal and verify no completed action or points.
+5. Request temperature twice and a compound request with overlapping components; confirm intended actions and verify no duplicate credit or charge.
+6. Cancel a proposal, inspect used results, then submit the diagnosis, discuss care, Finish Visit, review separate points/AI feedback, and save/resume hospital progress.
+
 ## Add A Patient
 
 1. Add a member to `PatientType` in `src/realtime_conversation.py`.
@@ -281,6 +373,9 @@ A test result can be plain text or an image path such as `data/sprites/tests/the
   the same base name plus `_atlas` (for example, `12_new_patient_atlas.png`).
 4. Add the patient's hospital coordinates to `PATIENT_POSITIONS` in `src/hospital_game.py`.
 5. Add a matching JSON configuration in `data/prompts`.
+6. Add explicit skill outcomes and appropriateness rules for that case in
+   `data/skills/cases.json` and extend the engine's case coverage tests. A new
+   prompt alone must not inherit invented normal results for the universal catalog.
 
 Patient atlases use a strict `4x4` grid of `256x256` cells. Rows are idle,
 talking, worried, and relieved; each row contains four animation frames. Keep
@@ -343,6 +438,10 @@ src/
   consultation_review.py     Stopwatch, discovery metrics, and MAI transcript scoring
   care_plan.py               Simulated prescription and referral records
   care_plan_ui.py            Prescription and referral forms
+  diagnostic_skills.py       Shared catalog, case outcomes and deterministic scoring
+  skill_browser.py           Scrollable universal catalog and conceptual art
+  skill_confirmation.py      Local confirmation of interpreted requests
+  skill_routing.py           Completed realtime tool-batch deduplication
   animation_assets.py        Strict transparent atlas loader
 tests/                       Offline regression tests
 tools/                       Preview, atlas preparation, and opt-in live checks

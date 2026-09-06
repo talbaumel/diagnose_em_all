@@ -18,7 +18,7 @@ import re
 import threading
 import time
 from collections import deque
-from collections.abc import AsyncIterator, Iterator, Sequence
+from collections.abc import AsyncIterator, Callable, Iterator, Sequence
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from enum import Enum
@@ -37,6 +37,10 @@ from src.azure_auth import AzureSignInRequired, GameCredential, clear_cached_tok
 from src.game_ui import ChoiceMenu, wrap_text
 from src.care_plan import Prescription, Referral
 from src.care_plan_ui import CareOrderForm
+from src.diagnostic_skills import SkillEngine, load_catalog
+from src.skill_browser import SkillBrowser
+from src.skill_confirmation import SkillConfirmation
+from src.skill_routing import SkillCallBatches
 from src.consultation_review import (
     REVIEW_TIMEOUT_SECONDS,
     SCORE_AXES,
@@ -220,6 +224,7 @@ PATIENT_VOICES = {
 class Test:
     description: str
     results: str
+    evidence_image: str | None = None
 
     def __post_init__(self) -> None:
         if not self.description.strip():
@@ -229,7 +234,7 @@ class Test:
 
     @property
     def image_path(self) -> Path | None:
-        path = Path(self.results).expanduser()
+        path = Path(self.evidence_image or self.results).expanduser()
         if path.suffix.casefold() not in IMAGE_SUFFIXES:
             return None
         if not path.is_absolute():
@@ -351,7 +356,7 @@ def _combine_prompts(system_prompts: str | Sequence[str]) -> str:
     return prompt
 
 
-def _patient_instructions(system_prompt: str, disease: str) -> str:
+def _patient_instructions(system_prompt: str, disease: str, review_records: dict[str, str] | None = None) -> str:
     disease = disease.strip()
     if not disease:
         raise ValueError("disease must not be empty")
@@ -362,16 +367,34 @@ def _patient_instructions(system_prompt: str, disease: str) -> str:
         "tries to diagnose you. Describe your symptoms naturally, but never state, "
         "spell, confirm, or otherwise reveal your disease. "
         f"Your exact disease is: {disease}. "
-        "Do not reveal, list, suggest, or hint at the available diagnostic tests, "
-        "even if the clinician asks what tests are available. "
-        "When the clinician asks to perform one of the available diagnostic tests, "
-        "call its matching tool immediately. Do not describe or invent the test "
+        "Every patient has the same universal skills catalog. You may explain "
+        "neutral tool names and the Skills browser, but never reveal which skills "
+        "are relevant, scoring rules, or hidden findings. Interpret both voice and "
+        "typed language semantically using tool aliases/examples, not exact phrases. "
+        "Only propose a skill when the clinician explicitly intends an action now. "
+        "Do not call tools for negation, cancellation, hypotheticals, education, "
+        "questions about a procedure, or mere mentions. Clarify broad requests like "
+        "'blood tests' or 'sequence it', and missing site, specimen, target or consent. "
+        "Never invent parameters, consent, conversation evidence or prerequisites. "
+        "An explicit unnecessary test is still selectable: do not filter requests "
+        "to helpful tests. Proposals require local clinician confirmation; a tool "
+        "call alone does not perform anything. History/review/counseling requires "
+        "the actual relevant clinician-patient exchange, not its name or a referral. "
+        "Before citing evidence_turns or consent_turn, call get_skill_context to "
+        "read the game's actual indexed transcript. Use its exact indices; never "
+        "guess indices from your own conversation item count. If the needed "
+        "transcript is not present yet, clarify or wait rather than inventing it. "
+        "Do not describe or invent the test "
         "result yourself. Diagnosis submissions are handled separately by the game. "
         "Do not judge guesses or declare a diagnosis correct during conversation. "
         "Respond to the clinician's prescriptions and referrals as the patient, "
         "asking relevant questions or expressing concerns. These are simulated care "
         "decisions, not real orders. Do not certify medication safety or invent "
-        "allergies, age, weight or other medical facts absent from the case."
+        "allergies, age, weight or other medical facts absent from the case. "
+        "Exception for existing historical documents: when asked to review one, "
+        "you may quote the following authored pre-existing records. They are not "
+        "newly performed tests; a review tool still requires an actual exchange. "
+        f"Existing review records: {json.dumps(review_records or {})}"
     )
 
 
@@ -387,31 +410,41 @@ def _patient_index(patient_type: PatientType) -> int:
     return list(PatientType).index(patient_type)
 
 
-def _test_tools(tests: Sequence[Test]) -> tuple[list[dict[str, Any]], dict[str, Test]]:
+def _test_tools(tests: Sequence[Test]) -> tuple[list[dict[str, Any]], dict[str, str]]:
+    """The identical neutral catalog is exposed for every case."""
+    if any(not isinstance(test, Test) for test in tests):
+        raise TypeError("tests must contain only Test instances")
     tools: list[dict[str, Any]] = []
-    tests_by_tool: dict[str, Test] = {}
-    for index, test in enumerate(tests, start=1):
-        if not isinstance(test, Test):
-            raise TypeError("tests must contain only Test instances")
-        slug = re.sub(r"[^a-z0-9]+", "_", test.description.casefold()).strip("_")
-        tool_name = f"perform_test_{index}_{slug or 'diagnostic'}"[:64]
-        tests_by_tool[tool_name] = test
+    tests_by_tool: dict[str, str] = {}
+    for skill in load_catalog():
+        tool_name = f"propose_{skill.id}"
+        tests_by_tool[tool_name] = skill.id
         tools.append(
             {
                 "type": "function",
                 "name": tool_name,
                 "description": (
-                    f"Perform the {test.description} test. Call this only when the "
-                    "clinician asks to perform this test."
+                    f"Propose {skill.name}. {skill.description} "
+                    f"Aliases: {', '.join(skill.aliases)}. "
+                    f"Example requests: {' | '.join(skill.examples)}. {skill.note or ''} "
+                    "Only for explicit current action intent. Requires local confirmation."
                 ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {},
-                    "additionalProperties": False,
-                },
+                "parameters": skill.parameters,
             }
         )
     return tools, tests_by_tool
+
+
+SKILL_CONTEXT_TOOL = {
+    "type": "function",
+    "name": "get_skill_context",
+    "description": (
+        "Read the actual indexed clinician/patient transcript for evidence_turns "
+        "and consent_turn. Read-only: performs no procedure, supplies no hidden "
+        "case facts, and does not complete history or counseling."
+    ),
+    "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+}
 
 
 def _input_device_candidates() -> tuple[int | None, ...]:
@@ -619,6 +652,13 @@ class PatientAnimator:
         self._test_close_button = pygame.Rect(400, 48, 30, 30)
         self._won = False
         self.metrics = ConsultationMetrics()
+        self.skill_engine: SkillEngine | None = None
+        self._skill_browser: SkillBrowser | None = None
+        self._skill_confirmation: SkillConfirmation | None = None
+        self._skill_decision: asyncio.Future[bool] | None = None
+        self._skills_busy = False
+        self._skills_chat_was_focused = False
+        self._skills_button = pygame.Rect(290, 384, 172, 28)
         self._discovered_tests_button = pygame.Rect(326, 34, 138, 24)
         self._review_open = False
         self._review_loading = False
@@ -683,7 +723,11 @@ class PatientAnimator:
 
     @property
     def push_to_talk(self) -> bool:
-        return self._push_to_talk.is_set() and not self._diagnosis_open and self._care_form is None
+        return self._push_to_talk.is_set() and not self._diagnosis_open and self._care_form is None and not self.skills_modal
+
+    @property
+    def skills_modal(self) -> bool:
+        return self._skills_busy or self._skill_browser is not None
 
     @property
     def won(self) -> bool:
@@ -731,6 +775,8 @@ class PatientAnimator:
             self.add_transcript("Case", self._diagnosis_feedback)
 
     def _open_diagnosis(self) -> None:
+        if self.skills_modal:
+            return
         if not self._ready or self.won or self.evidence_open or self._menu is not None or self._disease is None or self._care_form is not None:
             return
         if self._diagnosis_confirmed.is_set():
@@ -756,6 +802,9 @@ class PatientAnimator:
         self._set_text_focus(self._chat_was_focused)
 
     def _finish_consultation(self) -> None:
+        if self.skills_modal:
+            self.add_transcript("Case", "Resolve the pending skill request before finishing.")
+            return
         if not self._ready or self.won or not self._diagnosis_confirmed.is_set() or self.evidence_open or self._diagnosis_open or self._care_form is not None:
             return
         if self._sending or not self._text_messages.empty():
@@ -765,6 +814,8 @@ class PatientAnimator:
         self._consultation_finished.set()
 
     def _open_care_menu(self) -> None:
+        if self.skills_modal:
+            return
         if not self._ready or self.won or self.evidence_open or self._diagnosis_open or self._menu is not None or self._care_form is not None:
             return
         self._care_chat_was_focused = self._text_focused
@@ -805,8 +856,35 @@ class PatientAnimator:
         self._evidence_closed.clear()
 
     def _show_discovered_tests(self) -> None:
-        names = list(self.metrics.discovered_tests)
-        self.show_test_result(Test("Tests discovered", "\n".join(names) if names else "No tests discovered."))
+        reports = [f"{name}\n{result}" for name, result in self.metrics.discovered_tests.items()]
+        if self.skill_engine is not None:
+            reports = [f"Appropriate-use points: {self.skill_engine.score:+d} (separate from AI feedback)"]
+            reports.extend(
+                f"{action.get('name', action.get('skill_id', 'Skill'))}: "
+                f"{action.get('status', '')} / {action.get('points', 0):+d}\n"
+                f"Parameters: {json.dumps(action.get('parameters', {}))}\n"
+                f"{action.get('result', '')}\n"
+                f"{action.get('rationale', '')}"
+                for action in self.skill_engine.actions
+            )
+        self.show_test_result(Test("Used skills and results", "\n\n".join(reports) if reports else "No skills used."))
+
+    def _open_skills(self) -> None:
+        if not self._ready or self.won or self.evidence_open or self._menu or self._diagnosis_open or self._care_form or self.skills_modal:
+            return
+        self._skills_chat_was_focused = self._text_focused
+        self._set_text_focus(False)
+        self._skill_browser = SkillBrowser(load_catalog())
+
+    async def confirm_skill(self, proposal: dict) -> bool:
+        request = next((text for speaker, text in reversed(self._transcript) if speaker == "You"), "")
+        self._skill_confirmation = SkillConfirmation(proposal["name"], proposal["parameters"], request)
+        self._skill_decision = asyncio.get_running_loop().create_future()
+        try:
+            return await self._skill_decision
+        finally:
+            self._skill_confirmation = None
+            self._skill_decision = None
 
     async def wait_for_evidence_close(self) -> None:
         await self._evidence_closed.wait()
@@ -815,6 +893,8 @@ class PatientAnimator:
         return await self._text_messages.get()
 
     def _submit_text(self) -> None:
+        if self.skills_modal:
+            return
         if not self._ready or self.evidence_open or self.won or self._menu is not None or self._diagnosis_open or self._care_form is not None:
             return
         message = self._text_input.strip()
@@ -984,6 +1064,10 @@ class PatientAnimator:
         pygame.draw.rect(self._screen, UI_TEAL, self._discovered_tests_button, border_radius=5)
         discovered = self._status_font.render(f"TESTS FOUND {len(self.metrics.discovered_tests)}", True, UI_WHITE)
         self._screen.blit(discovered, discovered.get_rect(center=self._discovered_tests_button.center))
+        status_text, status_color = self._status(state)
+        pygame.draw.rect(self._screen, UI_PANEL, (292, 70, 172, 22), border_radius=5)
+        status = self._status_font.render(status_text, True, status_color)
+        self._screen.blit(status, status.get_rect(center=(378, 81)))
 
     def _draw_shadow(self, center: tuple[int, int], width: int) -> None:
         shadow_layer = pygame.Surface(SCREEN_SIZE, pygame.SRCALPHA)
@@ -1079,11 +1163,9 @@ class PatientAnimator:
         pygame.draw.rect(self._screen, UI_TEAL if enabled else (91, 119, 116), self._care_button, border_radius=5)
         care_label = self._status_font.render("CARE PLAN", True, UI_WHITE)
         self._screen.blit(care_label, care_label.get_rect(center=self._care_button.center))
-        status_text, status_color = self._status(state)
-        compact_status = self._status_font.render(status_text, True, status_color)
-        status_x = 462 - compact_status.get_width()
-        pygame.draw.circle(self._screen, status_color, (status_x - 10, 397), 3)
-        self._screen.blit(compact_status, (status_x, 390))
+        pygame.draw.rect(self._screen, UI_TEAL if enabled else (91, 119, 116), self._skills_button, border_radius=5)
+        skills_label = self._status_font.render("SKILLS / F5", True, UI_WHITE)
+        self._screen.blit(skills_label, skills_label.get_rect(center=self._skills_button.center))
 
         input_border = UI_CORAL if self._text_focused else (91, 119, 116)
         pygame.draw.rect(
@@ -1289,7 +1371,7 @@ class PatientAnimator:
         content = pygame.Rect(48, 116, 384, 286)
         pygame.draw.rect(self._screen, (232, 241, 235), content, border_radius=6)
         title_lines = wrap_text(self._test_result.description, self._test_title_font, content.width - 44)
-        result_lines = [] if self._test_result_image else wrap_text(self._test_result.results, self._test_result_font, content.width - 44)
+        result_lines = [] if self._test_result_image and not self._test_result.evidence_image else wrap_text(self._test_result.results, self._test_result_font, content.width - 44)
         title_height = len(title_lines) * 23 + 16
         result_height = len(result_lines) * 28
         image = None
@@ -1306,7 +1388,7 @@ class PatientAnimator:
                     round(image.get_height() * scale),
                 ),
             )
-            result_height = image.get_height()
+            result_height += image.get_height() + 12
         self._evidence_max_scroll = max(0, title_height + result_height + 32 - content.height)
         self._evidence_scroll = min(self._evidence_scroll, self._evidence_max_scroll)
         previous_clip = self._screen.get_clip()
@@ -1317,6 +1399,7 @@ class PatientAnimator:
         start_y += title_height
         if image:
             self._screen.blit(image, image.get_rect(midtop=(content.centerx, start_y)))
+            start_y += image.get_height() + 12
         for index, line in enumerate(result_lines):
             self._screen.blit(self._test_result_font.render(line, True, UI_INK), (70, start_y + index * 28))
         self._screen.set_clip(previous_clip)
@@ -1378,6 +1461,8 @@ class PatientAnimator:
                 lines.append(("", font, color))
 
         append("VISIT SCORES", heading=True)
+        if self.skill_engine is not None:
+            append(f"Appropriate-use points: {self.skill_engine.score:+d}", heading=True, compact=True)
         append(
             f"Tests discovered: {len(self.metrics.discovered_tests)}/{self._available_test_count}",
             heading=True, compact=True,
@@ -1409,9 +1494,17 @@ class PatientAnimator:
                 score = "0/100 (insufficient evidence)" if axis.score is None else f"{axis.score * 20}/100"
                 append(f"{SCORE_AXES[axis.key]}: {score}", heading=True)
                 append(axis.feedback)
-        append("TESTS DISCOVERED", heading=True)
-        for name in self.metrics.discovered_tests:
-            append(name)
+        if self.skill_engine is not None:
+            append("DETERMINISTIC APPROPRIATE USE (NOT AI)", heading=True)
+            append(str(self.skill_engine.summary()["formula"]))
+            for action in self.skill_engine.actions:
+                append(f"{action.get('name', action.get('skill_id', 'Skill'))}: {action.get('status', '')}, {action.get('points', 0):+d}")
+                append(f"Parameters: {json.dumps(action.get('parameters', {}))}")
+                append(action.get("result", ""))
+                append(action.get("rationale", ""))
+        append("USED SKILLS / DESCRIPTIVE RESULTS", heading=True)
+        for name, result in self.metrics.discovered_tests.items():
+            append(f"{name}: {result}")
         if not self.metrics.discovered_tests:
             append("No tests discovered.")
         append("PRESCRIPTIONS", heading=True)
@@ -1491,6 +1584,10 @@ class PatientAnimator:
         self._draw_scene_fade()
         if self._menu is not None and not self.evidence_open and not self.won:
             self._menu.draw(self._screen)
+        if self._skill_browser is not None:
+            self._skill_browser.draw(self._screen)
+        if self._skill_confirmation is not None:
+            self._skill_confirmation.draw(self._screen)
 
         pygame.transform.scale(self._screen, self._window.get_size(), self._window)
         pygame.display.flip()
@@ -1519,6 +1616,20 @@ class PatientAnimator:
             return
         key = event.key if event.type == pygame.KEYDOWN else None
         clicked = event.type == pygame.MOUSEBUTTONUP and event.button == 1
+        position = self._screen_position(event.pos) if hasattr(event, "pos") else (-1, -1)
+        if self._skill_confirmation is not None:
+            decision = self._skill_confirmation.handle_event(event, position)
+            if decision is not None and self._skill_decision is not None and not self._skill_decision.done():
+                self._skill_decision.set_result(decision)
+            return
+        if self._skill_browser is not None:
+            action = self._skill_browser.handle_event(event, position)
+            if action is not None:
+                self._skill_browser = None
+                if action[0] == "draft":
+                    self._text_input = (self._text_input + " " + action[1]).strip()
+                self._set_text_focus(action[0] == "draft" or self._skills_chat_was_focused)
+            return
         if self.evidence_open:
             if key in (pygame.K_ESCAPE, pygame.K_RETURN, pygame.K_KP_ENTER) or (
                 clicked and self._test_close_button.collidepoint(self._screen_position(event.pos))
@@ -1564,6 +1675,8 @@ class PatientAnimator:
         if self._diagnosis_open:
             self._handle_diagnosis_event(event)
             return
+        if self._skills_busy:
+            return
         if key == pygame.K_ESCAPE:
             if self._text_focused:
                 self._set_text_focus(False)
@@ -1579,6 +1692,8 @@ class PatientAnimator:
             self._show_discovered_tests()
         elif key == pygame.K_F4:
             self._open_care_menu()
+        elif key == pygame.K_F5:
+            self._open_skills()
         elif event.type == pygame.MOUSEWHEEL:
             self._transcript_scroll = max(0, self._transcript_scroll + event.y * 2)
         elif key in (pygame.K_PAGEUP, pygame.K_PAGEDOWN):
@@ -1600,6 +1715,8 @@ class PatientAnimator:
                 self._open_diagnosis()
             elif self._care_button.collidepoint(position):
                 self._open_care_menu()
+            elif self._skills_button.collidepoint(position):
+                self._open_skills()
             elif self._discovered_tests_button.collidepoint(position):
                 self._show_discovered_tests()
             elif self._text_send_button.collidepoint(position):
@@ -1643,6 +1760,91 @@ async def _realtime_authorization(*, sign_in: bool = False) -> AsyncIterator[dic
         raise
 
 
+async def _resolve_skill_call(
+    call: dict, skills_by_tool: dict[str, str], animator: PatientAnimator,
+    is_current: Callable[[], bool] = lambda: True,
+) -> dict:
+    """Validate, obtain real local approval, then execute exactly one proposal."""
+    engine = animator.skill_engine
+    if engine is None:
+        raise RuntimeError("Skill engine has not been initialized")
+    if call.get("name") == "get_skill_context":
+        try:
+            if json.loads(call.get("arguments", "{}")) != {}:
+                raise ValueError("get_skill_context takes no parameters.")
+        except (ValueError, TypeError) as error:
+            return {"status": "clarification_required", "result": str(error), "points": 0}
+        return {
+            "status": "read_only",
+            "turns": [
+                {"index": index, "role": "clinician" if speaker == "You" else "patient", "text": text}
+                for index, (speaker, text) in enumerate(animator._transcript)
+                if speaker in {"You", "Patient"}
+            ],
+            "result": "Only these recorded turns may be cited. A reference is not proof that a procedure was completed.",
+        }
+    record = {
+        "call_id": call.get("call_id"),
+        "tool": call.get("name"),
+        "arguments": call.get("arguments"),
+        "status": "pending",
+    }
+    animator.metrics.skill_requests.append(record)
+    proposal = None
+    restore_focus: bool | None = None
+    try:
+        tool_name = call.get("name")
+        skill_id = skills_by_tool.get(tool_name) if isinstance(tool_name, str) else None
+        if skill_id is None:
+            raise ValueError("Unknown skill. Choose a stable skill from the shared catalog.")
+        arguments = call.get("arguments", "{}")
+        if not isinstance(arguments, str):
+            raise ValueError("Skill arguments must be a JSON object encoded as text.")
+        parameters = json.loads(arguments)
+        if not isinstance(parameters, dict):
+            raise ValueError("Skill parameters must be an object.")
+        proposal = engine.prepare(skill_id, parameters, tuple(animator._transcript))
+        # Do not discard another modal or its draft when a tool response arrives.
+        while animator._menu or animator._diagnosis_open or animator._care_form or animator._skill_browser or animator.evidence_open:
+            if not is_current():
+                break
+            await asyncio.sleep(0.02)
+        confirmed = False
+        if is_current():
+            restore_focus = animator._text_focused
+            animator._set_text_focus(False)
+            confirmed = await animator.confirm_skill(proposal)
+        if not confirmed or not is_current():
+            engine.cancel(proposal)
+            result = {"status": "cancelled", "name": proposal["name"], "result": "Cancelled before action; no procedure completed.", "points": 0}
+        else:
+            result = engine.execute(proposal, tuple(animator._transcript))
+            record["status"] = result["status"]
+            if result["status"] == "completed":
+                animator.metrics.discover_test(result["name"], result["result"])
+            explanation = f"{result['result']}\n\nAppropriate use: {result.get('points', 0):+d}\n{result.get('rationale', '')}"
+            animator.show_test_result(Test(result["name"], explanation, result.get("image_path")))
+            await animator.wait_for_evidence_close()
+        record["status"] = result["status"]
+        animator.add_transcript("Skill", f"{result.get('name', skill_id)}: {result['status']}. {result['result']}")
+        return result
+    except ValueError as error:
+        record["status"] = "clarification"
+        record["reason"] = str(error)
+        animator.add_transcript("Skill", f"Not performed: {error}")
+        return {"status": "clarification_required", "result": str(error), "points": 0}
+    except asyncio.CancelledError:
+        if record["status"] == "pending":
+            record["status"] = "interrupted"
+            if proposal is not None:
+                engine.cancel(proposal)
+        raise
+    finally:
+        animator.metrics.diagnostic_skills = engine.summary()
+        if restore_focus is not None:
+            animator._set_text_focus(restore_focus)
+
+
 async def _conversation_session(
     system_prompt: str,
     disease: str,
@@ -1654,6 +1856,8 @@ async def _conversation_session(
     sign_in: bool = False,
 ) -> bool:
     test_tools, tests_by_tool = _test_tools(tests)
+    animator.skill_engine = SkillEngine(tuple(PatientType)[patient_index].name, tests)
+    animator._available_test_count = len(animator.skill_engine.catalog)
     if sign_in:
         animator.show_sign_in(
             "Finish Microsoft sign-in in your browser. This consultation will continue automatically.",
@@ -1671,10 +1875,10 @@ async def _conversation_session(
                         "session": {
                             "type": "realtime",
                             "instructions": _patient_instructions(
-                                system_prompt, disease
+                                system_prompt, disease, animator.skill_engine.review_records
                             ),
                             "output_modalities": ["audio"],
-                            "tools": test_tools,
+                            "tools": [*test_tools, SKILL_CONTEXT_TOOL],
                             "tool_choice": "auto",
                             "audio": {
                                 "input": {
@@ -1722,6 +1926,8 @@ async def _conversation_session(
             audio_queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=20)
             assistant_speaking = asyncio.Event()
             cancelled_response = asyncio.Event()
+            skill_batches = SkillCallBatches()
+            skill_queue: asyncio.Queue[tuple[int, list[dict]]] = asyncio.Queue()
 
             def enqueue_audio(audio: bytes) -> None:
                 try:
@@ -1762,8 +1968,9 @@ async def _conversation_session(
                 async def send_microphone_audio() -> None:
                     while not stop.is_set():
                         audio = await audio_queue.get()
-                        if animator.push_to_talk and assistant_speaking.is_set():
+                        if animator.push_to_talk and (assistant_speaking.is_set() or skill_batches.active_response):
                             cancelled_response.set()
+                            skill_batches.cancel()
                             assistant_speaking.clear()
                             animator.set_talking(False)
                             await websocket.send(
@@ -1784,7 +1991,9 @@ async def _conversation_session(
                         if animator.won:
                             continue
                         print(f"\nYou: {message}")
-                        if assistant_speaking.is_set():
+                        active = assistant_speaking.is_set() or skill_batches.active_response is not None
+                        skill_batches.cancel()
+                        if active:
                             cancelled_response.set()
                             assistant_speaking.clear()
                             animator.set_talking(False)
@@ -1821,10 +2030,43 @@ async def _conversation_session(
                     await asyncio.sleep(RELIEVED_DURATION_SECONDS)
                     stop.set()
 
+                async def perform_skill_calls() -> None:
+                    while not stop.is_set():
+                        generation, calls = await skill_queue.get()
+                        animator._skills_busy = True
+                        try:
+                            for call in calls:
+                                if generation != skill_batches.generation or animator.won:
+                                    result = {"status": "cancelled", "result": "Response interrupted before action.", "points": 0}
+                                else:
+                                    result = await _resolve_skill_call(
+                                        call, tests_by_tool, animator,
+                                        lambda: generation == skill_batches.generation,
+                                    )
+                                await websocket.send(json.dumps({
+                                    "type": "conversation.item.create",
+                                    "item": {
+                                        "type": "function_call_output",
+                                        "call_id": call["call_id"],
+                                        "output": json.dumps(result),
+                                    },
+                                }))
+                            # One continuation per completed batch, never per compound subcall.
+                            if generation == skill_batches.generation and not animator.won:
+                                await websocket.send(json.dumps({"type": "response.create"}))
+                        finally:
+                            skill_queue.task_done()
+                            animator._skills_busy = not skill_queue.empty()
+
                 async def receive_events() -> None:
                     async for raw_message in websocket:
                         event = json.loads(raw_message)
                         event_type = event.get("type")
+                        calls = skill_batches.collect(event)
+                        if calls and not animator.won:
+                            animator._skills_busy = True
+                            animator._push_to_talk.clear()
+                            skill_queue.put_nowait((skill_batches.generation, calls))
                         if animator.won and event_type != "conversation.item.input_audio_transcription.completed":
                             continue
 
@@ -1853,33 +2095,6 @@ async def _conversation_session(
                         elif event_type == "response.output_audio_transcript.done":
                             if not cancelled_response.is_set():
                                 animator.add_transcript("Patient", event.get("transcript", ""), event.get("item_id") or event.get("response_id"))
-                        elif (
-                            event_type == "response.function_call_arguments.done"
-                            and event.get("name") in tests_by_tool
-                        ):
-                            test = tests_by_tool[event["name"]]
-                            animator.metrics.discover_test(test.description, test.results)
-                            animator.show_test_result(test)
-                            print(f"\n{test.description}: {test.results}")
-                            await websocket.send(
-                                json.dumps(
-                                    {
-                                        "type": "conversation.item.create",
-                                        "item": {
-                                            "type": "function_call_output",
-                                            "call_id": event["call_id"],
-                                            "output": json.dumps(
-                                                {
-                                                    "test": test.description,
-                                                    "result": test.results,
-                                                }
-                                            ),
-                                        },
-                                    }
-                                )
-                            )
-                            await animator.wait_for_evidence_close()
-                            await websocket.send(json.dumps({"type": "response.create"}))
                         elif event_type == (
                             "conversation.item.input_audio_transcription.completed"
                         ):
@@ -1901,7 +2116,8 @@ async def _conversation_session(
                 receiver = asyncio.create_task(receive_events())
                 diagnosis = asyncio.create_task(finish_diagnosis())
                 stopped = asyncio.create_task(stop.wait())
-                tasks = {text_sender, receiver, diagnosis, stopped}
+                skills = asyncio.create_task(perform_skill_calls())
+                tasks = {text_sender, receiver, diagnosis, stopped, skills}
                 if input_stream is not None:
                     tasks.add(asyncio.create_task(send_microphone_audio()))
                 try:
@@ -1925,7 +2141,7 @@ async def _show_consultation_review(
     animator._review_open = True
     animator._review_loading = True
     animator._review_error = ""
-    animator._available_test_count = len({test.description for test in tests})
+    animator._available_test_count = len(load_catalog())
     animator._running = True
     review_stop = asyncio.Event()
 
@@ -1973,6 +2189,7 @@ async def _run_conversation(
     *,
     window: pygame.Surface | None = None,
     screen: pygame.Surface | None = None,
+    on_skill_score: Callable[[int], None] | None = None,
 ) -> ConversationResult:
     sign_in = False
     while True:
@@ -2006,6 +2223,8 @@ async def _run_conversation(
                 for task in (session, animation):
                     task.cancel()
                 await asyncio.gather(session, animation, return_exceptions=True)
+                if on_skill_score is not None and animator.skill_engine is not None:
+                    on_skill_score(animator.skill_engine.score)
                 if not animator.quit_requested:
                     await _show_consultation_review(animator, system_prompt, disease, tests)
                 return ConversationResult.SOLVED_QUIT if animator.quit_requested else ConversationResult.SOLVED
@@ -2031,6 +2250,7 @@ def start_consultation(
     *,
     window: pygame.Surface | None = None,
     screen: pygame.Surface | None = None,
+    on_skill_score: Callable[[int], None] | None = None,
 ) -> ConversationResult:
     try:
         return asyncio.run(
@@ -2041,6 +2261,7 @@ def start_consultation(
                 tests,
                 window=window,
                 screen=screen,
+                on_skill_score=on_skill_score,
             )
         )
     except KeyboardInterrupt:

@@ -1,0 +1,327 @@
+{
+  "Temperature": {
+    "aliases": ["temperature", "thermometer", "fever check"],
+    "examples": ["Measure your temperature.", "Let's check for a fever with a thermometer.", "Please take a temperature reading."]
+  },
+  "Pulse / heart rate": {
+    "aliases": ["pulse", "heart rate", "beats per minute"],
+    "examples": ["Check your pulse.", "Measure your heart rate.", "Let's count your heartbeat."]
+  },
+  "Blood pressure": {
+    "aliases": ["blood pressure", "BP", "pressure cuff"],
+    "examples": ["Measure your blood pressure.", "Let's check your BP.", "Take a reading with the blood-pressure cuff."]
+  },
+  "Respiratory rate": {
+    "aliases": ["respiratory rate", "breathing rate", "breaths per minute"],
+    "examples": ["Count your breaths per minute.", "Measure your respiratory rate.", "Let's check how fast you are breathing."]
+  },
+  "Oxygen saturation": {
+    "aliases": ["oxygen saturation", "SpO2", "pulse oximetry"],
+    "examples": ["Check your oxygen saturation.", "Measure your SpO2.", "Use a finger pulse oximeter."],
+    "note": "An oxygen-level measurement is not a request to give oxygen treatment."
+  },
+  "Lung auscultation": {
+    "aliases": ["listen to lungs", "chest auscultation", "breath sounds"],
+    "examples": ["Let me listen to your lungs.", "Check your breath sounds with a stethoscope.", "Auscultate the chest."],
+    "note": "Do not treat 'examine the chest' as automatically ordering imaging."
+  },
+  "Ear examination": {
+    "aliases": ["ear exam", "otoscopy", "otoscope"],
+    "examples": ["Let me examine your ears.", "Look inside the ear with an otoscope.", "Check your eardrums."]
+  },
+  "Capillary refill": {
+    "aliases": ["capillary refill", "CRT", "nail-bed refill"],
+    "examples": ["Check capillary refill.", "Press the nail bed and time how quickly the color returns.", "Measure the capillary refill time."]
+  },
+  "Visual acuity": {
+    "aliases": ["visual acuity", "eye chart", "vision test"],
+    "examples": ["Test your vision using an eye chart.", "Measure your visual acuity.", "Let's check how clearly you can read the chart."],
+    "note": "Different from inspecting the eye or examining the retina."
+  },
+  "Fundoscopic examination": {
+    "aliases": ["fundoscopy", "ophthalmoscopy", "retinal examination"],
+    "examples": ["Examine the back of your eyes.", "Perform fundoscopy.", "Look at the retina and optic discs with an ophthalmoscope."]
+  },
+  "Eye examination": {
+    "aliases": ["eye exam", "pupil examination", "external eye inspection"],
+    "examples": ["Examine your eyes for redness.", "Check your pupils with a penlight.", "Inspect your eyes for irritation."],
+    "note": "A broad eye request should not silently order visual acuity and fundoscopy too."
+  },
+  "Neurovascular examination": {
+    "aliases": ["neurovascular exam", "distal circulation and sensation", "limb nerve and blood supply"],
+    "examples": ["Check circulation and sensation in the injured foot.", "Perform a neurovascular examination of the ankle.", "Check the foot pulses and sensation."],
+    "note": "Confirm the limb if it is not established in conversation."
+  },
+  "Range of motion": {
+    "aliases": ["range of motion", "ROM", "joint movement"],
+    "examples": ["Assess the ankle's range of motion.", "Check how far the injured joint can move.", "Measure ankle movement with a goniometer."],
+    "note": "Confirm the joint; account for case-specific pain and safety constraints."
+  },
+  "Weight-bearing assessment": {
+    "aliases": ["weight bearing", "standing on injured foot", "walking after injury"],
+    "examples": ["Assess whether you can bear weight on the injured foot.", "Check your ability to stand on that ankle.", "Assess weight-bearing after the injury."],
+    "note": "A history question about earlier walking is not itself a completed physical assessment."
+  },
+  "Gait assessment": {
+    "aliases": ["gait", "walking pattern", "walking assessment"],
+    "examples": ["Assess your gait.", "Let me observe how you walk.", "Examine your walking pattern."]
+  },
+  "Strength and reflex testing": {
+    "aliases": ["muscle strength", "reflex testing", "motor examination"],
+    "examples": ["Test your leg strength and reflexes.", "Perform a motor and reflex examination.", "Check muscle power and tendon reflexes."],
+    "note": "Do not assume an entire neurological examination was completed from one reflex test."
+  },
+  "Functional assessment": {
+    "aliases": ["daily activities", "functional assessment", "mobility assessment"],
+    "examples": ["Assess how back pain affects your daily activities.", "Review your ability to stand, dress and move around.", "Perform a functional mobility assessment."]
+  },
+  "Joint examination": {
+    "aliases": ["joint exam", "joint swelling", "joint tenderness"],
+    "examples": ["Examine the swollen knee.", "Check the painful joint for warmth and swelling.", "Perform a joint examination."],
+    "note": "Confirm the joint if unclear; this is not automatically joint-fluid sampling."
+  },
+  "Breast examination": {
+    "aliases": ["breast exam", "breast palpation", "breast lump examination"],
+    "examples": ["With your consent, examine the breast lump.", "Perform a clinical breast examination after consent.", "Offer a chaperone and ask permission to examine the breast."],
+    "note": "Offering or requesting consent must not automatically complete the examination."
+  },
+  "Rash distribution assessment": {
+    "aliases": ["rash distribution", "rash mapping", "skin distribution"],
+    "examples": ["Check where the rash appears on your body.", "Map the distribution of the rash.", "Assess which skin areas are affected."]
+  },
+  "Skin scraping": {
+    "aliases": ["skin scraping", "fungal scraping", "KOH preparation"],
+    "examples": ["Take a skin scraping from the rash.", "Collect a scraping to check for fungus.", "Order a KOH preparation from the affected skin."],
+    "note": "Specify the site; a particular preparation may require a subtype."
+  },
+  "Chest X-ray": {
+    "aliases": ["chest X-ray", "CXR", "chest radiograph"],
+    "examples": ["Order a chest X-ray.", "Get a CXR.", "Request a chest radiograph."],
+    "note": "An unspecified 'scan' needs clarification rather than selecting CT or X-ray."
+  },
+  "Chest CT": {
+    "aliases": ["chest CT", "thoracic CT", "CT of lungs"],
+    "examples": ["Order a CT of the chest.", "Request a thoracic CT scan.", "Get a chest CT to evaluate the lung lesion."],
+    "note": "Do not silently add contrast or a pulmonary angiography protocol."
+  },
+  "Spine MRI": {
+    "aliases": ["spine MRI", "lumbar MRI", "back MRI"],
+    "examples": ["Order an MRI of the lumbar spine.", "Request a spine MRI.", "Get an MRI of the lower back."],
+    "note": "Confirm the spinal region if not established."
+  },
+  "Ultrasound": {
+    "aliases": ["ultrasound", "sonography", "US scan"],
+    "examples": ["Order an ultrasound of the breast lump.", "Request ultrasound of the swollen joint.", "Get an ultrasound of the affected area."],
+    "note": "Body site is required; one generic ultrasound tool must not guess the organ."
+  },
+  "Mammography": {
+    "aliases": ["mammogram", "mammography", "diagnostic breast X-ray"],
+    "examples": ["Order diagnostic mammography.", "Request a mammogram for this breast lump.", "Get diagnostic breast X-ray imaging."]
+  },
+  "Biopsy": {
+    "aliases": ["biopsy", "tissue sample", "lesion sampling"],
+    "examples": ["Arrange a biopsy of the lung lesion.", "Obtain a tissue sample from the breast lump.", "Request a biopsy of the suspicious lesion."],
+    "note": "Confirm site, procedure and consent. Link sampling and histopathology so one clinical order does not earn duplicate rewards."
+  },
+  "Histopathology": {
+    "aliases": ["histology", "histopathology", "tissue pathology"],
+    "examples": ["Send the biopsy for histopathology.", "Examine the tissue sample under the microscope.", "Request histological examination of the specimen."],
+    "note": "Requires a tissue sample. Reviewing an existing report should not order another test."
+  },
+  "Immunohistochemistry": {
+    "aliases": ["immunohistochemistry", "IHC", "tissue immunostains"],
+    "examples": ["Order immunohistochemistry on the biopsy.", "Request tumor immunostains.", "Perform IHC to help classify the tissue."],
+    "note": "Confirm the marker panel and specimen; distinguish broad IHC from a specific receptor panel."
+  },
+  "ER / PR / HER2 testing": {
+    "aliases": ["ER PR HER2", "breast receptor testing", "hormone receptor status"],
+    "examples": ["Test the breast tumor for ER, PR and HER2.", "Order breast cancer receptor testing.", "Check estrogen, progesterone and HER2 receptor status."],
+    "note": "A request for one marker should not automatically order or score all three."
+  },
+  "Bone-marrow examination": {
+    "aliases": ["bone marrow exam", "marrow aspirate", "bone marrow biopsy"],
+    "examples": ["Arrange a bone-marrow examination.", "Request a marrow aspirate for the abnormal blood counts.", "Discuss and arrange a bone-marrow biopsy."],
+    "note": "Aspirate and biopsy are related but distinct; confirm the requested procedure and consent."
+  },
+  "Flow cytometry": {
+    "aliases": ["flow cytometry", "immunophenotyping", "cell population analysis"],
+    "examples": ["Order flow cytometry on the blood sample.", "Request immunophenotyping of the abnormal cells.", "Analyze the marrow cell populations with flow cytometry."],
+    "note": "Confirm the specimen and requested analysis."
+  },
+  "Complete blood count": {
+    "aliases": ["CBC", "FBC", "full blood count"],
+    "examples": ["Order a complete blood count.", "Check a CBC.", "Get a full blood count."],
+    "note": "'Blood tests' alone should prompt clarification, not order an entire laboratory panel."
+  },
+  "Blood smear": {
+    "aliases": ["blood smear", "blood film", "peripheral smear"],
+    "examples": ["Review a peripheral blood smear.", "Order a blood film.", "Examine the blood cells under a microscope."],
+    "note": "Interpret 'review' as opening an existing result when one is already available."
+  },
+  "Joint-fluid analysis": {
+    "aliases": ["synovial fluid", "joint aspirate", "joint fluid analysis"],
+    "examples": ["Arrange aspiration and analysis of the swollen knee fluid.", "Analyze the synovial fluid.", "Send the joint aspirate for cell count and crystals."],
+    "note": "Requires a specified joint and specimen; culture is a separate requested component."
+  },
+  "Electrolytes": {
+    "aliases": ["electrolytes", "sodium potassium chloride", "serum electrolytes"],
+    "examples": ["Check serum electrolytes.", "Measure sodium, potassium and chloride.", "Order an electrolyte panel."],
+    "note": "Do not silently expand this into every chemistry test."
+  },
+  "Tumor mutation panel": {
+    "aliases": ["tumor sequencing", "somatic mutation panel", "tumor genomic profiling"],
+    "examples": ["Sequence the tumor for somatic mutations.", "Order a tumor mutation panel.", "Request genomic profiling of the cancer tissue."],
+    "note": "Different from inherited genetic testing or viral sequencing; confirm tumor specimen and panel."
+  },
+  "Karyotype": {
+    "aliases": ["karyotype", "chromosome analysis", "chromosome count"],
+    "examples": ["Order a karyotype.", "Examine the chromosome number and large structural changes.", "Request conventional chromosome analysis."],
+    "note": "'Chromosomal abnormalities' can mean karyotype, FISH or microarray; clarify when unspecified."
+  },
+  "FISH": {
+    "aliases": ["FISH", "fluorescence in situ hybridization", "targeted chromosome probe"],
+    "examples": ["Order FISH for the suspected rearrangement.", "Use fluorescence in situ hybridization on the sample.", "Request targeted FISH probes for the specified gene fusion."],
+    "note": "The target/probe must be specified or established in context."
+  },
+  "Molecular testing": {
+    "aliases": ["targeted gene fusion assay", "molecular hematology", "fusion PCR"],
+    "examples": ["Test the blood sample for BCR-ABL1 by PCR.", "Order a targeted molecular assay for the suspected gene fusion.", "Request molecular testing for the specified hematologic mutation."],
+    "note": "Very broad name: clarify target and method. Do not route every mention of PCR here."
+  },
+  "Germline genetic testing": {
+    "aliases": ["germline testing", "inherited cancer panel", "hereditary predisposition"],
+    "examples": ["After counseling and consent, order inherited cancer predisposition testing.", "Test for a hereditary cancer syndrome.", "Request a germline cancer gene panel."],
+    "note": "Distinguish inherited variants from tumor-only mutations; establish consent and panel."
+  },
+  "Family pedigree": {
+    "aliases": ["family pedigree", "family tree", "inheritance history"],
+    "examples": ["Build a three-generation family pedigree.", "Map affected relatives in a family tree.", "Take a structured family history for inherited conditions."]
+  },
+  "Genetic counseling": {
+    "aliases": ["genetic counseling", "genetic test consent", "genetic implications"],
+    "examples": ["Arrange genetic counseling before testing.", "Discuss the implications and limitations of genetic testing.", "Review inherited risks and testing choices with the patient."],
+    "note": "Arranging a referral and completing a counseling discussion are not the same action."
+  },
+  "Chromosomal microarray": {
+    "aliases": ["chromosomal microarray", "CMA", "copy number analysis"],
+    "examples": ["Order a chromosomal microarray.", "Check for chromosome copy-number gains and losses using CMA.", "Request microarray testing for deletions and duplications."],
+    "note": "Not interchangeable with karyotype, sequencing or targeted FISH."
+  },
+  "Gene sequencing": {
+    "aliases": ["inherited-condition sequencing", "gene panel sequencing", "sequence a specified gene"],
+    "examples": ["Sequence the specified gene for the suspected inherited condition.", "Order the relevant inherited-disorder gene panel.", "Request gene sequencing for this familial condition."],
+    "note": "'Sequence it' or 'genetic test' is ambiguous. Confirm specimen, target and purpose."
+  },
+  "Autoimmune antibodies": {
+    "aliases": ["autoantibodies", "autoimmune serology", "targeted antibody panel"],
+    "examples": ["Order rheumatoid factor and anti-CCP for the suspected arthritis.", "Request the relevant autoimmune antibody tests.", "Check the specified autoantibodies for this differential diagnosis."],
+    "note": "Clarify which antibodies; do not interpret a vague request as every autoimmune test."
+  },
+  "Inflammatory markers": {
+    "aliases": ["CRP", "ESR", "inflammatory markers"],
+    "examples": ["Check CRP and ESR.", "Order inflammatory markers.", "Measure C-reactive protein."],
+    "note": "A request for CRP alone must not silently order ESR too."
+  },
+  "Targeted allergy testing": {
+    "aliases": ["specific IgE", "allergen testing", "targeted allergy tests"],
+    "examples": ["Test for specific IgE to the suspected pollen allergen.", "Order targeted allergy testing for the suspected trigger.", "Check sensitization to the specified allergen."],
+    "note": "Confirm allergen and method; skin patch tests assess a different kind of allergy."
+  },
+  "Gonorrhea NAAT": {
+    "aliases": ["gonorrhea NAAT", "gonococcal PCR", "Neisseria gonorrhoeae"],
+    "examples": ["Order a gonorrhea NAAT.", "Test the appropriate sample for gonorrhea by PCR.", "Request nucleic acid testing for Neisseria gonorrhoeae."],
+    "note": "Establish sample site and consent. A combined STI panel is not automatic."
+  },
+  "HIV testing": {
+    "aliases": ["HIV test", "HIV antigen antibody", "HIV screening"],
+    "examples": ["With your consent, order an HIV test.", "Request HIV antigen-antibody screening.", "Discuss consent for HIV testing and then order the agreed test."],
+    "note": "Confirm consent and test type; counseling alone is not a completed test."
+  },
+  "Syphilis testing": {
+    "aliases": ["syphilis serology", "syphilis test", "treponemal testing"],
+    "examples": ["Order syphilis serology.", "Test the blood sample for syphilis.", "Request syphilis screening with consent."],
+    "note": "Use the case's defined testing algorithm rather than inventing a test combination."
+  },
+  "Stool pathogen testing": {
+    "aliases": ["stool pathogen panel", "enteric pathogen testing", "gastrointestinal PCR panel"],
+    "examples": ["Order a stool pathogen panel.", "Test the stool for enteric pathogens.", "Request a gastrointestinal pathogen PCR panel."],
+    "note": "Clarify panel versus a named pathogen; not equivalent to microbiome profiling."
+  },
+  "Fecal calprotectin": {
+    "aliases": ["fecal calprotectin", "faecal calprotectin", "stool calprotectin"],
+    "examples": ["Measure fecal calprotectin.", "Order a stool calprotectin test.", "Check faecal calprotectin for intestinal inflammation."]
+  },
+  "Celiac serology": {
+    "aliases": ["celiac screen", "coeliac serology", "tTG IgA"],
+    "examples": ["Order celiac serology.", "Request a coeliac blood screen.", "Check tissue-transglutaminase IgA with total IgA."],
+    "note": "Select the case-defined serology components; a wheat-allergy test is different."
+  },
+  "Microbiome profiling (research)": {
+    "aliases": ["microbiome profiling", "gut microbial composition", "microbial diversity"],
+    "examples": ["Request research microbiome profiling of the stool.", "Analyze gut microbial composition for research.", "Measure microbial diversity in the research sample."],
+    "note": "Research-only concept. Not a definitive infection test or standalone clinical diagnosis."
+  },
+  "Sample culture": {
+    "aliases": ["culture", "bacterial culture", "grow organisms"],
+    "examples": ["Send the blood sample for culture.", "Culture the specified specimen.", "Order a bacterial culture of the collected sample."],
+    "note": "Confirm specimen and organism class; a culture request does not mean sequencing."
+  },
+  "Antibiotic susceptibility": {
+    "aliases": ["antibiotic susceptibility", "sensitivity testing", "antibiogram"],
+    "examples": ["Test the cultured organism's antibiotic susceptibility.", "Request an antibiogram for the isolate.", "Check which antibiotics the bacterial isolate is susceptible to."],
+    "note": "Requires a suitable bacterial isolate; not a viral antiviral-susceptibility test."
+  },
+  "Targeted pathogen PCR": {
+    "aliases": ["pathogen PCR", "targeted nucleic acid test", "PCR for specified organism"],
+    "examples": ["Run PCR for the specified virus on the collected sample.", "Request a targeted nucleic acid test for the suspected pathogen.", "Test the specimen for the named organism by PCR."],
+    "note": "Clarify the organism and sample. A named specific assay should route to its specific skill when available."
+  },
+  "Pathogen sequencing": {
+    "aliases": ["microbial sequencing", "sequence the isolate", "pathogen genomic analysis"],
+    "examples": ["Sequence the cultured bacterial isolate.", "Request genomic sequencing of the identified organism.", "Analyze the isolate's genome."],
+    "note": "Overlaps the newer viral skill. A viral shotgun/metagenomic request should route there, not order both."
+  },
+  "Headache diary": {
+    "aliases": ["headache diary", "headache log", "migraine journal"],
+    "examples": ["Review your headache diary.", "Go through your headache log for timing and triggers.", "Assess headache patterns from the diary."],
+    "note": "Asking the patient to start a future diary is not the same as reviewing an existing one."
+  },
+  "Allergy-trigger history": {
+    "aliases": ["allergy triggers", "seasonal symptoms", "allergen exposure history"],
+    "examples": ["Review what exposures trigger your allergy symptoms.", "Ask about pollen, pets and seasonal patterns.", "Take a structured allergy-trigger history."],
+    "note": "Proposed structured history action; score information actually elicited, not the mention of a keyword."
+  },
+  "Panic-symptom assessment": {
+    "aliases": ["panic symptoms", "panic attack history", "structured panic assessment"],
+    "examples": ["Review the timing and symptoms of these panic-like episodes.", "Take a structured panic-symptom history.", "Assess episodes of sudden fear and accompanying physical symptoms."],
+    "note": "Do not presume symptoms are psychological before considering relevant physical causes."
+  },
+  "Exposure-history review": {
+    "aliases": ["exposure history", "new products", "contact triggers"],
+    "examples": ["Review new soaps, gloves and skin products.", "Take an exposure history for the rash.", "Ask about recent work, plant and chemical exposures."]
+  },
+  "Work / sleep schedule review": {
+    "aliases": ["sleep schedule", "shift pattern", "work and sleep history"],
+    "examples": ["Review your work shifts and sleep schedule.", "Compare bedtime and wake time across working days.", "Take a structured sleep and work history."]
+  },
+  "Sleep-apnea screening": {
+    "aliases": ["sleep apnea screen", "OSA screening", "snoring and witnessed apneas"],
+    "examples": ["Screen for obstructive sleep apnea.", "Assess snoring, witnessed breathing pauses and daytime sleepiness.", "Complete the case's sleep-apnea screening questionnaire."],
+    "note": "Screening is not a sleep study and does not establish a diagnosis."
+  },
+  "Sleep study": {
+    "aliases": ["sleep study", "polysomnography", "overnight sleep monitoring"],
+    "examples": ["Arrange a sleep study.", "Request overnight polysomnography.", "Order overnight sleep monitoring for suspected apnea."],
+    "note": "Clarify home testing versus laboratory polysomnography if the scenario supports both."
+  },
+  "Sexual-health history": {
+    "aliases": ["sexual history", "sexual-health assessment", "STI risk discussion"],
+    "examples": ["With your permission, discuss your sexual health confidentially.", "Take a respectful sexual-health history.", "Ask about partners, protection and relevant exposures."],
+    "note": "Permission is not a completed history or authorization to order every STI test."
+  },
+  "Viral metagenomic sequencing": {
+    "aliases": ["viral metagenomics", "shotgun viral sequencing", "nanopore viral sequencing", "viral mNGS"],
+    "examples": ["Order shotgun metagenomic sequencing to look for viruses.", "Analyze the sample for viruses using nanopore sequencing.", "Request unbiased viral metagenomic sequencing."],
+    "note": "Confirm sample and DNA/RNA workflow. Distinct from targeted PCR, tumor sequencing and isolate sequencing. No product name required."
+  }
+}

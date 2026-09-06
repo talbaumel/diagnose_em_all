@@ -15,6 +15,7 @@ from src.azure_auth import AzureSignInRequired
 from src.game_ui import wrap_text
 from src.care_plan import Prescription, Referral
 from src.consultation_review import AxisScore, ConsultationScorecard, SCORE_AXES
+from src.diagnostic_skills import load_catalog
 from src.realtime_conversation import ConversationResult, PatientAnimator, PatientType, Test, _conversation_session, _diagnosis_matches, _run_conversation, _show_consultation_review, strat_conversation
 
 
@@ -387,7 +388,7 @@ class ConversationUITests(unittest.TestCase):
         self.animator.metrics.discover_test("Temperature", "38 C")
         self.key(pygame.K_F3)
         self.assertTrue(self.animator.evidence_open)
-        self.assertEqual(self.animator._test_result.results, "Temperature")
+        self.assertEqual(self.animator._test_result.results, "Temperature\n38 C")
         self.assertEqual(len(self.animator.metrics.discovered_tests), 1)
 
     def test_review_scroll_and_return(self):
@@ -458,6 +459,31 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
         with patch("src.realtime_conversation._conversation_session", session), patch("src.realtime_conversation._show_consultation_review", review):
             result = await _run_conversation("patient", "common cold", 0, [], window=self.window)
         self.assertEqual(result, ConversationResult.SOLVED_QUIT)
+
+    async def test_finished_visit_exports_skill_score_before_review_failure_or_quit(self):
+        from src.diagnostic_skills import SkillEngine
+
+        received = []
+
+        async def session(prompt, disease, index, tests, animator, stop, *, sign_in=False):
+            animator.skill_engine = SkillEngine("COMMON_COLD_KID", [Test("temperature", "37.6 C")])
+            proposal = animator.skill_engine.prepare("temperature", {}, ())
+            animator.skill_engine.execute(proposal, ())
+            animator.show_win()
+            stop.set()
+            return True
+
+        async def review(animator, prompt, disease, tests):
+            self.assertEqual(received, [animator.skill_engine.score])
+            animator._review_error = "Service unavailable"
+            animator.quit_requested = True
+
+        with patch("src.realtime_conversation._conversation_session", session), patch(
+            "src.realtime_conversation._show_consultation_review", review,
+        ):
+            result = await _run_conversation("patient", "common cold", 0, [], window=self.window, on_skill_score=received.append)
+        self.assertEqual(result, ConversationResult.SOLVED_QUIT)
+        self.assertEqual(len(received), 1)
 
     async def test_review_retries_failure_without_losing_completion(self):
         animator = PatientAnimator(0, window=self.window, disease="common cold")
@@ -541,15 +567,19 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
 
         async def send(payload):
             event = json.loads(payload)
-            if event["type"] == "response.create":
+            if event.get("item", {}).get("role") == "user":
                 care_sent.set()
 
         async def events():
             try:
                 yield json.dumps({"type": "response.function_call_arguments.done", "name": "win", "call_id": "untrusted"})
                 yield json.dumps({"type": "conversation.item.input_audio_transcription.completed", "transcript": "common cold", "item_id": "voice"})
-                yield json.dumps({"type": "response.function_call_arguments.done", "name": "perform_test_1_temperature", "call_id": "test-1"})
-                yield json.dumps({"type": "response.function_call_arguments.done", "name": "perform_test_1_temperature", "call_id": "test-2"})
+                yield json.dumps({"type": "response.done", "response": {
+                    "id": "tests", "status": "completed", "output": [
+                        {"type": "function_call", "name": "propose_temperature", "call_id": "test-1", "arguments": "{}"},
+                        {"type": "function_call", "name": "propose_temperature", "call_id": "test-2", "arguments": "{}"},
+                    ],
+                }})
                 processed.set()
                 await asyncio.Event().wait()
             finally:
@@ -586,17 +616,22 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
             patch("src.realtime_conversation.sd.RawOutputStream") as output,
             patch("src.realtime_conversation.RELIEVED_DURATION_SECONDS", 0.01),
             patch.object(PatientAnimator, "wait_for_evidence_close", close_evidence),
+            patch.object(PatientAnimator, "confirm_skill", new=AsyncMock(return_value=True)),
         ):
             task = asyncio.create_task(_conversation_session("patient", "common cold", 0, [Test("Temperature", "38 C")], animator, stop))
             try:
                 await asyncio.wait_for(processed.wait(), 2)
+                async def wait_for_skills():
+                    while animator._skills_busy:
+                        await asyncio.sleep(0)
+                await asyncio.wait_for(wait_for_skills(), 2)
                 configuration = json.loads(websocket.send.call_args_list[0].args[0])["session"]
                 self.assertNotIn("win", [tool["name"] for tool in configuration["tools"]])
-                self.assertEqual(len(configuration["tools"]), 1)
+                self.assertEqual(len(configuration["tools"]), len(load_catalog()) + 1)
                 self.assertFalse(animator.won)
                 self.assertFalse(stop.is_set())
                 self.assertIn(("You", "common cold"), animator._transcript)
-                self.assertEqual(animator.metrics.discovered_tests, {"Temperature": "38 C"})
+                self.assertIn("38.0", next(iter(animator.metrics.discovered_tests.values())))
                 self.assertIsNotNone(animator.metrics.started_at)
                 animator._open_diagnosis()
                 animator._diagnosis_input = "migraine"
