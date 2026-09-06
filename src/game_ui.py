@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+import time
 from collections.abc import Sequence
 from pathlib import Path
 from unicodedata import bidirectional
@@ -40,6 +42,18 @@ def wrap_text(text: str, font: pygame.font.Font, width: int) -> list[str]:
                 current += character
         lines.append(current)
     return lines
+
+
+def draw_spinner(
+    screen: pygame.Surface,
+    center: tuple[int, int],
+    radius: int,
+    color: tuple[int, int, int],
+) -> None:
+    angle = time.monotonic() * 5
+    bounds = pygame.Rect(0, 0, radius * 2, radius * 2)
+    bounds.center = center
+    pygame.draw.arc(screen, color, bounds, angle, angle + math.tau * 0.72, width=2)
 
 
 class ChoiceMenu:

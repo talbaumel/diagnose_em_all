@@ -135,6 +135,7 @@ During a diagnosis battle:
 - The stopwatch starts when the patient connection is ready and stops when you finish the visit, including care planning.
 - Click Tests Found or press F3 to review tests you have discovered by requesting them.
 - Click Care Plan or press F4 to add prescriptions, add referrals, or review recorded orders.
+- Click the Dragon Copilot logo-and-text button to ask for help during the visit. F6 also opens it; Escape, F6, or Return to Patient closes the helper.
 - After confirming a diagnosis, the Diagnose button becomes Finish Visit (also F2). Confirm to end the call and open the scorecard.
 
 Chat input and transcripts support Russian and Hebrew, including right-to-left
@@ -148,6 +149,49 @@ are checked locally against the configured `disease` name, ignoring capitalizati
 spacing, and punctuation separators. Use the condition name rather than a sentence;
 synonyms, abbreviations, and lists of possible diagnoses are not accepted in this
 version. The microphone is disabled while the diagnosis dialog is open.
+
+## Dragon Copilot
+
+The in-visit Dragon Copilot helper uses the HAS HealthBot Direct Line protocol from the HAS Bench
+observability component's underlying client. It is separate from the patient model
+and MAI scoring. Type a question and press Enter or Send; scroll responses with the
+mouse wheel or Page Up / Page Down. Your patient-chat draft is preserved. The patient
+connection and visit stopwatch stay active, but microphone input is blocked while
+the helper is open. Closing it cancels any pending local request. Failed or cancelled
+questions stay in the input for manual retry; requests time out after 120 seconds.
+
+Each question sends the observed clinician/patient transcript, discovered test names
+and text findings, and recorded prescriptions/referrals. Image findings are marked
+as unavailable rather than uploading images or local paths. Hidden case answers,
+patient system prompts, and undiscovered tests are not sent. Successful helper turns
+are replayed for follow-up questions within the same visit. Helper messages are not
+added to the patient transcript, scorecard, or save file. HAS may retain requests
+under its own service policy; cancelling locally cannot retract an already-sent
+request. Use fictional game cases only, not real patient information.
+
+The default HCP endpoint is `https://eastus.healthbot-dev.microsoft.com/account/obs-hcp-1-kz3jzz4`, using the HAS Bench scenario and Key Vault configuration:
+
+| Environment Variable | Default / Purpose |
+| --- | --- |
+| `HAS_BOT_ID` | `obs-hcp-1-kz3jzz4`; bot account ID, not an Entra tenant ID |
+| `HAS_SCENARIO` | `dsb_debug_scenario` |
+| `HAS_KEY_VAULT_URL` | `https://hlsamlta4hwork0724448635.vault.azure.net/` |
+| `HAS_SECRET_NAME` | `bot-<bot-id>-webchat-secret`; a canonical-name 404 tries the legacy `bot-<bot-id>-web-chat-secret` |
+| `HAS_DIRECT_LINE_SECRET` | Optional Web Chat secret supplied securely through the environment; bypasses Key Vault |
+
+Configure overrides before launching the game. Key Vault access uses the existing
+Azure credential helper with the `https://vault.azure.net/.default` scope. An Azure
+CLI sign-in with secret-read permission is required unless a token for that scope
+is already cached or a Direct Line secret is supplied. Access to the game's OpenAI
+resource does not grant HAS Key Vault access. Never put secret values in source,
+debug configuration committed to git, or patient JSON.
+
+Live verification on September 6, 2026 succeeded with `obs-hcp-1-kz3jzz4` and
+`dsb_debug_scenario`: Key Vault secret lookup, Direct Line conversation creation,
+scenario startup, and a response to a synthetic clinical question all completed.
+
+HAS guidance is AI-generated educational assistance, not real medical advice;
+it does not automatically order tests, prescribe, submit a diagnosis, or finish a visit.
 
 ## Prescriptions and Referrals
 
