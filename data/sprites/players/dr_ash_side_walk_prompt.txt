@@ -1,0 +1,15 @@
+Repair the SIDE-VIEW WALK CYCLES of the reference Dr. Ash sprite atlas. The reference is broken: almost all side-view frames repeat the same widely spread legs. Do not repeat that mistake. Preserve the character identity, spiky charcoal hair, youthful face, white coat, stethoscope, navy trousers, black shoes, proportions, pixel-art palette and crisp outlines.
+
+1536x1024 image, pure opaque white background, exactly 6 columns by 4 rows, 24 isolated full-body figures. No shadows, labels, guides, borders or scenery. Each cell 256x256, same figure size about 208px tall, feet at y=236, torso centered x=128. Rows: DOWN, LEFT, RIGHT, UP. Keep the DOWN and UP rows consistent with the reference. The LEFT and RIGHT rows are true side profiles and are the important repair.
+
+Both side rows must form a complete six-frame alternating WALK, not a run, with physically different leg silhouettes. One grounded supporting foot and one swinging foot. The near leg is slightly lighter navy, the far leg darker. Preserve the identity of each leg across frames, including when they overlap. A shoe must never rotate to face backward. Match the arm counter-swing to the legs. Keep the head and torso stable in shape and position.
+
+Read each side row left to right, in this exact sequence:
+1. CONTACT A: near leg extended forward toward the facing direction, heel down and toe slightly up; far leg extended backward with heel raised and toe touching. Wide foot separation.
+2. RECOIL A: near leg taking weight and moving closer beneath the hip; far heel lifts, far knee bends and starts coming forward. Foot separation about half of frame 1.
+3. PASSING A: near leg straight underneath the hip with its whole shoe flat on the ground; far knee passes slightly in front, bent, its shoe lifted near the standing ankle. Both shoes are close to the body center: narrow silhouette, less than half the foot separation in frame 1. Do NOT draw a wide stride here.
+4. CONTACT B: far leg extended forward, near leg extended backward. Opposite legs from frame 1, with swapped overlap and shading. Wide foot separation.
+5. RECOIL B: far leg takes weight beneath the hip; near leg lifts and bends coming forward. Foot separation about half of frame 4.
+6. PASSING B: far leg straight underneath the hip, grounded flat shoe; near knee passes slightly in front, bent, its shoe lifted near the standing ankle. Narrow silhouette, less than half the foot separation in frame 4. This leads back to frame 1.
+
+Columns 3 and 6 MUST have narrowly overlapping legs and a vertically planted supporting leg. Columns 1 and 4 MUST have widely separated feet and opposite leading legs. Columns 2 and 5 MUST be intermediate, with the rear foot off the floor. These are sequential animation frames, not six unrelated walking illustrations. No duplicate adjacent poses, no frozen wide stance, no both-feet-airborne hopping, no changing shoe shapes or body scale. White backdrop will be removed locally; keep outlines closed so white clothing remains intact.

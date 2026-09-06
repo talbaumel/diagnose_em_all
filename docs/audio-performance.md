@@ -72,7 +72,9 @@ GPT speech + transcript
 
 Speech is processed before insertion. Recorded cues and diagnostic sounds
 bypass the voice effect. Any tool call suppresses spontaneous insertion in that
-response; diagnostics/wins also suppress requested bodily actions.
+response; diagnostic tests also suppress requested bodily actions. Finishing the
+visit interrupts playback. Only the clinician's explicit diagnosis and Finish
+Visit actions can complete a case; the patient model cannot declare a win.
 
 The scheduler prefers the widest internal gap at or below -42 dBFS for at
 least 180 ms. It retains 50 ms quiet margins and replaces only quiet samples,

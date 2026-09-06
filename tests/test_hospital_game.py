@@ -23,6 +23,7 @@ class MovementTests(unittest.TestCase):
         navigator._facing = "down"
         navigator._animation_time = 0.0
         navigator._walk_time = 0.0
+        navigator._walk_distance = 0.0
         navigator._camera_position = navigator._camera_target()
         navigator._greeting_patient = None
         navigator._greeting_until = 0.0
@@ -58,8 +59,28 @@ class MovementTests(unittest.TestCase):
     def test_walk_clock_resets_when_blocked(self):
         navigator = self.navigator((16, 470))
         navigator._walk_time = 2.0
+        navigator._walk_distance = 50.0
         navigator.update(pygame.Vector2(-1, 0), 0.05)
         self.assertEqual(navigator._walk_time, 0)
+        self.assertEqual(navigator._walk_distance, 0)
+
+    def test_side_walk_phase_follows_distance_at_any_frame_rate(self):
+        frames = tuple(pygame.Surface((1, 1)) for frame_index in range(6))
+        for rate in (30, 60, 120):
+            navigator = self.navigator()
+            navigator._player_idle_frames = {}
+            navigator._player_frames = {"right": frames}
+            for frame_index in range(rate // 5):
+                navigator.update(pygame.Vector2(1, 0), 1 / rate)
+            self.assertAlmostEqual(navigator._walk_distance, 44.0)
+            self.assertIs(navigator._player_frame(navigator._walk_time), frames[3])
+
+    def test_walk_distance_uses_actual_wall_slide(self):
+        navigator = self.navigator((16, 470))
+        navigator.update(pygame.Vector2(-2, 1), 0.05)
+        self.assertEqual(navigator._facing, "left")
+        self.assertAlmostEqual(navigator._walk_distance, navigator._player_position.y - 470)
+        self.assertLess(navigator._walk_distance, PLAYER_SPEED * 0.05)
 
     def test_camera_easing_is_frame_rate_independent(self):
         positions = []
@@ -128,6 +149,22 @@ class HospitalFlowTests(unittest.TestCase):
         self.assertEqual(navigator._animation_time, 0)
         self.assertEqual(navigator.player_position, PLAYER_START)
 
+    def test_side_walk_keeps_supporting_foot_on_ground(self):
+        navigator = HospitalNavigator([], set(), window=self.window)
+        navigator._scene_started_at = -1000
+        navigator._walking = True
+        marker = pygame.Surface((12, 20), pygame.SRCALPHA)
+        marker.fill((251, 0, 251))
+        expected_bottom = round((navigator._player_position - navigator._camera()).y) - 1
+        for direction in ("left", "right"):
+            navigator._facing = direction
+            for walk_time in (0.0, 0.07, 0.14):
+                navigator._walk_time = walk_time
+                with patch.object(navigator, "_player_frame", return_value=marker):
+                    navigator.draw()
+                foot = navigator._screen.get_at((240, expected_bottom))
+                self.assertEqual(foot, pygame.Color(251, 0, 251))
+
     def test_full_roster_completion_and_relaunch(self):
         selected = iter(self.scenarios)
         completions = []
@@ -158,6 +195,12 @@ class HospitalFlowTests(unittest.TestCase):
             self.assertEqual(run.call_count, visits)
             self.assertFalse(ProgressStore([self.scenarios[0].patient_type.value], self.save_path).load().diagnosed)
 
+    def test_quitting_completed_review_saves_case_before_exiting(self):
+        with patch.object(HospitalNavigator, "run", return_value=self.scenarios[0]) as run, patch("src.hospital_game.start_consultation", return_value=ConversationResult.SOLVED_QUIT):
+            start_hospital_game(self.scenarios[:1], save_path=self.save_path)
+        self.assertEqual(run.call_count, 1)
+        progress = ProgressStore([self.scenarios[0].patient_type.value], self.save_path).load()
+        self.assertEqual(progress.diagnosed, {self.scenarios[0].patient_type.value})
 
 if __name__ == "__main__":
     unittest.main()

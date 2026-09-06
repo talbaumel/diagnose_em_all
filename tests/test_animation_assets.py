@@ -85,6 +85,19 @@ class AtlasTests(unittest.TestCase):
         self.assertEqual(len(dimensions), 1)
         self.assertEqual(next(iter(dimensions))[1], 92)
 
+    def test_side_walk_has_passing_poses_between_contacts(self):
+        navigator = HospitalNavigator([], set(), window=pygame.display.get_surface())
+        self.addCleanup(navigator.close)
+        for direction in ("left", "right"):
+            with self.subTest(direction=direction):
+                frames = navigator._player_frames[direction]
+                foot_spans = [
+                    frame.subsurface((0, frame.get_height() - 18, frame.get_width(), 18)).get_bounding_rect().width
+                    for frame in frames
+                ]
+                for contact, passing in ((0, 2), (3, 5)):
+                    self.assertLess(foot_spans[passing], foot_spans[contact] * 0.8)
+
     def test_missing_new_atlas_preserves_fallback(self):
         navigator = HospitalNavigator.__new__(HospitalNavigator)
         fallback = {"down": (pygame.Surface((1, 1)),)}

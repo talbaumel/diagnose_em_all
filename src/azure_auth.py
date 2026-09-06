@@ -17,6 +17,10 @@ BROWSER_TIMEOUT_SECONDS = 180
 _browser_tokens: dict[str, AccessToken] = {}
 
 
+def clear_cached_token(scope: str) -> None:
+    _browser_tokens.pop(scope, None)
+
+
 class AzureSignInRequired(ClientAuthenticationError):
     pass
 
@@ -63,7 +67,7 @@ async def _browser_access_token(scope: str) -> AccessToken:
 class GameCredential:
     def __init__(self, *, sign_in: bool = False) -> None:
         self._sign_in = sign_in
-        self._cli = AzureCliCredential(process_timeout=15)
+        self._cli = AzureCliCredential(process_timeout=60)
 
     async def get_token(self, scope: str) -> AccessToken:
         if self._sign_in:
@@ -71,7 +75,7 @@ class GameCredential:
             _browser_tokens[scope] = token
             return token
         cached = _browser_tokens.get(scope)
-        if cached is not None and cached.expires_on > time.time() + 60:
+        if cached is not None and cached.expires_on > time.time() + 300:
             return cached
         try:
             return await self._cli.get_token(scope)

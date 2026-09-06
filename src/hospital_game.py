@@ -54,6 +54,7 @@ PLAYER_DIRECTION_FRAME_ORDER = {
 PLAYER_RIGHT_ARTIFACT_RECT = (0, 46, PLAYER_FRAME_SIZE[0], 3)
 PLAYER_START = (480, 480)
 PLAYER_SPEED = 220
+PLAYER_SIDE_WALK_CYCLE_DISTANCE = 80
 INTERACTION_DISTANCE = 88
 PATIENT_COLLISION_DISTANCE = 28
 SCENE_FADE_MS = 280
@@ -265,7 +266,7 @@ class HospitalNavigator:
         notice: str = "",
     ) -> None:
         pygame.init()
-        pygame.display.set_caption("Diagnose 'Em All - Hospital")
+        pygame.display.set_caption("Diagnose Em' All - Hospital")
         self._owns_display = window is None
         self._window = (
             pygame.display.set_mode(WINDOW_SIZE) if window is None else window
@@ -296,6 +297,7 @@ class HospitalNavigator:
         self._walking = False
         self._animation_time = 0.0
         self._walk_time = 0.0
+        self._walk_distance = 0.0
         self._camera_position = self._camera_target()
         self._greeting_patient: PatientType | None = None
         self._greeting_until = 0.0
@@ -437,6 +439,9 @@ class HospitalNavigator:
             frames = self._player_idle_frames[self._facing]
             sequence = (frames[0],) * 14 + (frames[1], frames[2], frames[3], frames[1])
             return animation_frame(sequence, self._animation_time, 6)
+        if self._walking and self._facing in ("left", "right") and self._player_idle_frames is not None:
+            frames = self._player_frames[self._facing]
+            return animation_frame(frames, self._walk_distance / PLAYER_SIDE_WALK_CYCLE_DISTANCE, len(frames))
         return animation_frame(
             self._player_frames[self._facing],
             animation_time,
@@ -575,9 +580,11 @@ class HospitalNavigator:
         return nearest if distance_to_room(nearest) <= 76 else None
 
     def update(self, direction: pygame.Vector2, elapsed_seconds: float) -> None:
+        previous_position = self._player_position.copy()
         self.move(direction, elapsed_seconds)
         self._animation_time += elapsed_seconds
         self._walk_time = self._walk_time + elapsed_seconds if self._walking else 0.0
+        self._walk_distance = self._walk_distance + self._player_position.distance_to(previous_position) if self._walking else 0.0
         self._camera_position = self._camera_position.lerp(
             self._camera_target(), 1 - math.exp(-elapsed_seconds / 0.10)
         )
@@ -865,7 +872,7 @@ class HospitalNavigator:
         pygame.draw.rect(self._screen, UI_WHITE, (26, 18, 8, 20), border_radius=2)
         pygame.draw.rect(self._screen, UI_WHITE, (20, 24, 20, 8), border_radius=2)
         eyebrow = self._eyebrow_font.render("ST. ALDER HOSPITAL", True, UI_GOLD)
-        title = self._title_font.render("DIAGNOSE 'EM ALL", True, UI_WHITE)
+        title = self._title_font.render("DIAGNOSE EM' ALL", True, UI_WHITE)
         self._screen.blit(eyebrow, (56, 9))
         self._screen.blit(title, (56, 23))
         pygame.draw.rect(self._screen, UI_PANEL, self._pause_button, border_radius=5)
@@ -1063,7 +1070,7 @@ class HospitalNavigator:
             shadow.center = rectangle.midbottom
             pygame.draw.ellipse(self._screen, (78, 103, 97), shadow)
             draw_rectangle = rectangle
-            if patient_type is None and self._walking:
+            if patient_type is None and self._walking and self._facing not in ("left", "right"):
                 walk_lift = round(
                     abs(math.sin(self._walk_time * math.pi * 7)) * 2
                 )
@@ -1224,11 +1231,13 @@ def start_hospital_game(scenarios: Sequence[PatientScenario], *, save_path: Path
             )
             if result == ConversationResult.QUIT:
                 return
-            if result == ConversationResult.SOLVED:
+            if result in (ConversationResult.SOLVED, ConversationResult.SOLVED_QUIT):
                 diagnosed.add(selected_patient.patient_type)
                 progress.diagnosed = {patient.value for patient in diagnosed}
                 store.save(progress)
                 unlocked = next((room.name for room in HOSPITAL_ROOMS if room.unlock_after == selected_patient.patient_type), None)
                 notice = store.warning or (f"{unlocked} unlocked" if unlocked else "Case closed. Progress saved.")
+                if result == ConversationResult.SOLVED_QUIT:
+                    return
     finally:
         pygame.quit()

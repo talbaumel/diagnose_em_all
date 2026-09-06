@@ -300,7 +300,10 @@ class ConversationRuntime:
         while True:
             generation, text = await self.user_requests.get()
             await self.idle.wait()
-            while generation == self.playback.generation and (self.user_talking or self.animator.push_to_talk):
+            while (
+                generation == self.playback.generation and self.blocked
+                and not self.animator.won and not self.stop.is_set()
+            ):
                 await asyncio.sleep(0.005)
             if generation != self.playback.generation or self.blocked:
                 continue
@@ -452,20 +455,17 @@ class ConversationRuntime:
                     continue
                 current = response.generation == self.playback.generation
                 calls = list(response.calls.values())
-                diagnostic = any(call["name"] in self.tests or call["name"] == "win" for call in calls)
+                diagnostic = any(call["name"] in self.tests for call in calls)
                 for call in calls:
                     name = call["name"]
                     current = response.generation == self.playback.generation
                     if not current or self.stop.is_set():
                         await self.tool_result(call["call_id"], {"status": "skipped"})
-                    elif name == "win":
-                        self.animator.show_win()
-                        await self.tool_result(call["call_id"], {"won": True})
-                        await asyncio.sleep(5)
-                        self.stop.set()
-                        break
                     elif name in self.tests:
                         test = self.tests[name]
+                        self.animator.metrics.discover_test(
+                            test.description, test.results
+                        )
                         self.animator.show_test_result(test)
                         result = {"test": test.description, "result": test.results}
                         if test.audio_path is not None:
