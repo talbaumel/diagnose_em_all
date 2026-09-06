@@ -1,8 +1,24 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from pathlib import Path
+from unicodedata import bidirectional
 
 import pygame
+from bidi import get_display
+
+
+def chat_font(size: int, *, bold: bool = False) -> pygame.font.Font:
+    filename = "DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf"
+    return pygame.font.Font(str(Path(__file__).resolve().parent.parent / "data" / "fonts" / filename), size)
+
+
+def is_rtl(text: str) -> bool:
+    for character in text:
+        direction = bidirectional(character)
+        if direction in ("R", "AL", "L"):
+            return direction != "L"
+    return False
 
 
 def wrap_text(text: str, font: pygame.font.Font, width: int) -> list[str]:
@@ -11,14 +27,14 @@ def wrap_text(text: str, font: pygame.font.Font, width: int) -> list[str]:
         current = ""
         for word in paragraph.split():
             candidate = f"{current} {word}".strip()
-            if font.size(candidate)[0] <= width:
+            if font.size(get_display(candidate))[0] <= width:
                 current = candidate
                 continue
             if current:
                 lines.append(current)
             current = ""
             for character in word:
-                if current and font.size(current + character)[0] > width:
+                if current and font.size(get_display(current + character))[0] > width:
                     lines.append(current)
                     current = ""
                 current += character

@@ -8,6 +8,7 @@ dependencies = [
     "azure-identity>=1.25,<2",
     "httpx>=0.28,<1",
     "pygame>=2.6,<3",
+    "python-bidi>=0.6,<0.7",
     "sounddevice>=0.5,<1",
     "websockets>=15,<16",
 ]
