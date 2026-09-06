@@ -1,0 +1,22 @@
+[project]
+name = "diagnose-em-all"
+version = "0.1.0"
+description = "A voice-driven diagnostic game powered by Azure OpenAI Realtime."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "azure-identity>=1.25,<2",
+    "httpx>=0.28,<1",
+    "pygame>=2.6,<3",
+    "sounddevice>=0.5,<1",
+    "websockets>=15,<16",
+]
+
+[tool.uv]
+package = false
+keyring-provider = "subprocess"
+
+[[tool.uv.index]]
+name = "mshealthil"
+url = "https://VssSessionToken@pkgs.dev.azure.com/mshealthil/HealthIL/_packaging/healthil_PublicPackages/pypi/simple/"
+default = true

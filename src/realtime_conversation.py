@@ -2,8 +2,8 @@
 
 """Voice conversation client for the Azure OpenAI Realtime API.
 
-Install dependencies with:
-    python -m pip install azure-identity pygame sounddevice websockets
+Install dependencies from the repository root with:
+    uv sync
 
 Sign in from the game when prompted, or authenticate beforehand with az login.
 """
