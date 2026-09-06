@@ -5,7 +5,8 @@ clinician, interview animated patients, request tests, and identify each disease
 
 ## Requirements
 
-- Python 3.11 or newer. Development is tested on Python 3.13/macOS.
+- [uv](https://docs.astral.sh/uv/getting-started/installation/) for Python and project dependencies.
+- Python 3.11 or newer for the audio runtime. Development is tested on Python 3.13/macOS.
 - An Azure account with access to the configured Azure OpenAI Realtime deployment
 - A Microsoft work or school account with access to the Azure OpenAI resource
 - A working audio output device; microphone optional (typing is supported)
@@ -13,15 +14,55 @@ clinician, interview animated patients, request tests, and identify each disease
 
 ## Setup
 
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install -r requirements.txt -r requirements-voice.txt
+Install uv and make sure the `keyring` CLI with the `artifacts-keyring` backend
+is installed and available on your PATH. The project uses the private Azure
+Artifacts package feed:
+
+```text
+https://pkgs.dev.azure.com/mshealthil/HealthIL/_packaging/healthil_PublicPackages/pypi/simple/
 ```
 
-The common-cold kid enables the optional voice filter, so install both manifests
-for the default campaign. Without voice dependencies, set
-`performance_profile.voice.enabled` to `false` in
+This feed is configured as uv's default index in `pyproject.toml`, disabling the
+implicit public PyPI index. Your account must have read access to the feed.
+uv's subprocess keyring provider is enabled in the project configuration, and
+the feed URL includes the non-secret username `VssSessionToken` so uv can request
+credentials from keyring. Complete the Microsoft sign-in flow if prompted by the
+Azure Artifacts credential provider. No manually configured PAT is required.
+
+If keyring is already provisioned on your machine, reuse it. To install or update
+the tool through the private feed with an existing working keyring provider:
+
+```bash
+uv tool install keyring --with artifacts-keyring --default-index https://VssSessionToken@pkgs.dev.azure.com/mshealthil/HealthIL/_packaging/healthil_PublicPackages/pypi/simple/ --keyring-provider subprocess
+uv tool update-shell
+```
+
+On a new machine without keyring, first provision `keyring` and `artifacts-keyring`
+using your organization's approved workstation setup; installing them from an
+authenticated feed cannot bootstrap its own missing credential provider.
+Restart your shell if needed after updating PATH. Keep credentials out of project
+files and chat. The game's Azure sign-in is separate from package-feed authentication.
+
+Then sync the project from the repository root:
+
+```bash
+keyring --list-backends
+uv sync --locked --python 3.13
+uv pip install -r requirements-voice.txt
+```
+
+uv creates and manages `.venv` automatically and downloads Python if needed.
+No manual environment creation or activation is required. Dependencies are declared
+in `pyproject.toml` and pinned in `uv.lock` to keep dependency versions reproducible
+across machines. Use `uv sync --locked` in CI to fail if the lockfile is out of date.
+Use `uv add <package>` or `uv remove <package>` to change dependencies; use
+`uv lock --upgrade` followed by `uv sync` to update locked versions.
+Commit both `pyproject.toml` and `uv.lock` when dependencies change.
+
+The common-cold kid enables the optional voice filter, so install
+`requirements-voice.txt` for the default campaign. Reinstall it after an exact
+`uv sync`, which removes packages outside the project lockfile. Without voice
+dependencies, set `performance_profile.voice.enabled` to `false` in
 [the kid's JSON](data/prompts/01_common_cold_kid.json), or run another persona.
 The pinned PyWORLD/setuptools combination may emit an upstream
 `pkg_resources` deprecation warning.
@@ -60,13 +101,13 @@ should use their own registered Microsoft Entra application.
 ## Run
 
 ```bash
-python -m src.debug_example
+uv run python -m src.debug_example
 ```
 
 Limit the roster by passing one or more prompt files:
 
 ```bash
-python -m src.debug_example data/prompts/01_common_cold_kid.json
+uv run python -m src.debug_example data/prompts/01_common_cold_kid.json
 ```
 
 VS Code includes **Start Diagnose 'Em All** and **Test Common Cold Kid** tasks.
@@ -103,6 +144,10 @@ reset the full campaign.
 The hospital pauses when unfocused; a consultation does not. Losing focus
 releases push-to-talk. Returning to the hospital cancels the unfinished case.
 Retry starts a new conversation, not recovery of the previous session.
+
+Chat input and transcripts support Russian and Hebrew, including right-to-left
+Hebrew text mixed with English and numbers. Chat uses bundled DejaVu Sans fonts
+so no system font installation is needed; their license is in [data/fonts/LICENSE](data/fonts/LICENSE).
 
 Only an explicit diagnosis submission followed by Finish Visit can close a case.
 Mentioning a diagnosis in voice or text chat does not count, and the patient model
@@ -268,9 +313,27 @@ writes leave the previous save intact.
 
 ## Tests and developer tools
 
+Preview navigation without Azure or audio hardware (no progress is saved;
+selecting a patient exits this navigation-only preview):
+
 ```bash
-SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy python -m unittest discover -s tests -v
-python -m compileall -q src tests tools
+uv run python -m tools.preview_game --interactive
+```
+
+Export hospital, consultation, evidence, completion, and animation contact sheets:
+
+```bash
+SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy uv run python -m tools.preview_game
+```
+
+Images go to `.artifacts/polish`. Use `--size 480`, `--size 720`, or `--size 960`
+to check window scaling, and `--output-dir` to keep separate sets.
+
+Run the offline regression suite and syntax checks:
+
+```bash
+SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy uv run python -m unittest discover -s tests -v
+uv run python -m compileall -q src tests tools
 ```
 
 The suite uses unittest, mocked services and controlled audio sinks; it does not
@@ -289,7 +352,7 @@ To verify the scoring deployment with one synthetic consultation (incurs normal
 model usage, with no microphone or speaker access):
 
 ```bash
-SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy python -m tools.smoke_review --live
+SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy uv run python -m tools.smoke_review --live
 ```
 
 This prints the validated eight-axis scorecard and exports top/bottom screenshots
@@ -301,14 +364,7 @@ the microphone or playing sound. It requires Azure authentication and incurs
 normal service usage:
 
 ```bash
-# Navigation preview without Azure, audio hardware or progress changes
-python -m tools.preview_game --interactive
-
-# Export UI and animation contact sheets under .artifacts/polish
-SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy python -m tools.preview_game
-
-# Explicitly paid/live service check; no microphone or speaker output
-SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy python -m tools.smoke_conversation --live
+SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy uv run python -m tools.smoke_conversation --live
 ```
 
 The live tool accepts `--message` for an ordinary clinician question and
@@ -374,9 +430,9 @@ removes only the connected exterior background, keeps enclosed coat whites,
 extracts isolated figures in row order, and repacks a strict transparent grid:
 
 ```bash
-SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy python -m tools.prepare_atlas data/sprites/players/dr_ash_walk_source.png .artifacts/dr_ash_walk_original.png --columns 6
-SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy python -m tools.prepare_atlas data/sprites/players/dr_ash_side_walk_source.png .artifacts/dr_ash_side_walk.png --columns 6
-SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy python -m tools.prepare_atlas data/sprites/players/dr_ash_idle_source.png data/sprites/players/dr_ash_idle_atlas.png --columns 4
+SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy uv run python -m tools.prepare_atlas data/sprites/players/dr_ash_walk_source.png .artifacts/dr_ash_walk_original.png --columns 6
+SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy uv run python -m tools.prepare_atlas data/sprites/players/dr_ash_side_walk_source.png .artifacts/dr_ash_side_walk.png --columns 6
+SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy uv run python -m tools.prepare_atlas data/sprites/players/dr_ash_idle_source.png data/sprites/players/dr_ash_idle_atlas.png --columns 4
 ```
 
 For a walk-atlas rebuild, replace only the original atlas's second and third

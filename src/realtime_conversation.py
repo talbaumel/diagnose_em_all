@@ -2,8 +2,8 @@
 
 """Voice conversation client for the Azure OpenAI Realtime API.
 
-Install dependencies with:
-    python -m pip install azure-identity pygame sounddevice websockets
+Install dependencies from the repository root with:
+    uv sync
 
 Sign in from the game when prompted, or authenticate beforehand with az login.
 """
@@ -31,6 +31,7 @@ import sounddevice as sd
 import websockets
 from azure.core.credentials import AccessToken
 from azure.core.exceptions import AzureError
+from bidi import get_display
 from websockets.exceptions import InvalidStatus, WebSocketException
 
 from src.animation_assets import load_atlas
@@ -39,7 +40,7 @@ from src.audio_playback import AudioPlaybackError, DeviceSink
 from src.care_plan import Prescription, Referral
 from src.care_plan_ui import CareOrderForm
 from src.conversation_runtime import ConversationRuntime
-from src.game_ui import ChoiceMenu, draw_spinner, wrap_text
+from src.game_ui import ChoiceMenu, chat_font, is_rtl, draw_spinner, wrap_text
 from src.patient_performance import PerformanceProfile
 from src.pokedex_ui import PokedexPanel
 from src.consultation_review import (
@@ -398,6 +399,7 @@ def _patient_instructions(system_prompt: str, disease: str) -> str:
 def _diagnosis_matches(submitted: str, disease: str) -> bool:
     submitted_words = re.findall(r"\w+", submitted.casefold().replace("_", " "))
     disease_words = re.findall(r"\w+", disease.casefold().replace("_", " "))
+    print(f"Diagnosis check: submitted={submitted_words}, disease={disease_words}")
     return bool(disease_words) and submitted_words == disease_words
 
 
@@ -668,8 +670,8 @@ class PatientAnimator:
         self._text_send_button = pygame.Rect(414, 418, 48, 40)
         self._eyebrow_font = pygame.font.SysFont("Avenir Next", 10, bold=True)
         self._case_font = pygame.font.SysFont("Avenir Next", 16, bold=True)
-        self._status_font = pygame.font.SysFont("Avenir Next", 11, bold=True)
-        self._text_font = pygame.font.SysFont("Avenir Next", 15)
+        self._status_font = chat_font(11, bold=True)
+        self._text_font = chat_font(15)
         self._test_title_font = pygame.font.SysFont("Avenir Next", 16, bold=True)
         self._test_result_font = pygame.font.SysFont("Avenir Next", 18, bold=True)
         self._win_font = pygame.font.SysFont("Avenir Next", 32, bold=True)
@@ -909,8 +911,9 @@ class PatientAnimator:
         end = len(self._transcript_lines) - self._transcript_scroll
         lines = self._transcript_lines[max(0, end - visible_lines):end]
         for index, line in enumerate(lines):
-            text = self._status_font.render(line, True, UI_INK)
-            self._screen.blit(text, (18, 301 + index * 17))
+            text = self._status_font.render(get_display(line), True, UI_INK)
+            text_x = 456 - text.get_width() if is_rtl(line) else 18
+            self._screen.blit(text, (text_x, 301 + index * 17))
         if len(self._transcript_lines) > visible_lines:
             track = pygame.Rect(468, 300, 3, 64)
             pygame.draw.rect(self._screen, UI_MUTED, track)
@@ -1153,10 +1156,13 @@ class PatientAnimator:
         )
         input_text = self._text_input or "Message the patient..."
         input_color = UI_INK if self._text_input else (104, 123, 120)
-        rendered_input = self._text_font.render(input_text, True, input_color)
+        input_rtl = is_rtl(input_text)
+        rendered_input = self._text_font.render(get_display(input_text), True, input_color)
         input_area = self._text_input_rect.inflate(-18, -8)
         input_x = input_area.x
-        if rendered_input.get_width() > input_area.width:
+        if input_rtl:
+            input_x = max(input_area.x, input_area.right - rendered_input.get_width())
+        elif rendered_input.get_width() > input_area.width:
             input_x = input_area.right - rendered_input.get_width()
         previous_clip = self._screen.get_clip()
         self._screen.set_clip(input_area)
@@ -1167,6 +1173,8 @@ class PatientAnimator:
             and int(time.monotonic() * 2) % 2 == 0
         ):
             cursor_x = min(input_rect.right + 2, input_area.right - 2) if self._text_input else input_area.x
+            if input_rtl:
+                cursor_x = max(input_area.x, input_rect.left - 2)
             pygame.draw.line(
                 self._screen,
                 UI_CORAL,

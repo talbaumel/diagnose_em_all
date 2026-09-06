@@ -14,7 +14,7 @@ from websockets.exceptions import InvalidStatus
 from websockets.http11 import Response
 
 from src.azure_auth import AzureSignInRequired
-from src.game_ui import wrap_text
+from src.game_ui import is_rtl, wrap_text
 from src.hospital_game import load_patient_scenario
 from src.audio_playback import AudioPlaybackError
 from src.care_plan import Prescription, Referral
@@ -425,6 +425,61 @@ class ConversationUITests(unittest.TestCase):
         self.animator.add_transcript("Patient", "doctor.", "response", append=True)
         self.animator.add_transcript("Patient", "Hello doctor.", "response")
         self.assertEqual(self.animator._transcript, [("Patient", "Hello doctor.")])
+
+    def test_chat_fonts_have_distinct_hebrew_and_russian_glyphs(self):
+        for font in (self.animator._text_font, self.animator._status_font):
+            for alphabet in ("\u05e9\u05dc\u05d5\u05dd", "\u041f\u0440\u0438\u0432\u0435\u0442"):
+                with self.subTest(alphabet=alphabet, height=font.get_height()):
+                    self.assertTrue(all(metric is not None for metric in font.metrics(alphabet)))
+                    glyphs = {
+                        pygame.image.tostring(font.render(character, True, (255, 255, 255)), "RGBA")
+                        for character in alphabet
+                    }
+                    self.assertEqual(len(glyphs), len(alphabet))
+
+    def test_multilingual_input_is_sent_in_logical_order(self):
+        for message in ("\u05e9\u05dc\u05d5\u05dd 123", "\u041f\u0440\u0438\u0432\u0435\u0442 123"):
+            with self.subTest(message=message):
+                self.animator._sending = False
+                self.animator._set_text_focus(True)
+                self.animator.handle_event(pygame.event.Event(pygame.TEXTINPUT, text=message), self.stop)
+                self.assertEqual(self.animator._text_input, message)
+                self.animator.draw()
+                self.animator._submit_text()
+                self.assertEqual(self.animator._text_messages.get_nowait(), message)
+                self.assertIn(("You", message), self.animator._transcript)
+
+    def test_hebrew_transcript_reorders_only_at_render_time(self):
+        message = "\u05e9\u05dc\u05d5\u05dd"
+        self.animator.add_transcript("Patient", message, "response")
+        with patch.object(self.animator, "_status_font", wraps=self.animator._status_font) as font:
+            self.animator._draw_transcript()
+            self.assertEqual(font.render.call_args.args[0], "Patient: \u05dd\u05d5\u05dc\u05e9")
+        self.assertEqual(self.animator._transcript, [("Patient", message)])
+        self.assertEqual(self.animator._transcript_lines, [f"Patient: {message}"])
+
+    def test_hebrew_input_renders_rtl_and_keeps_caret_visible(self):
+        self.animator._set_text_focus(True)
+        for message in ("\u05e9\u05dc\u05d5\u05dd", "\u05e9\u05dc\u05d5\u05dd" * 100):
+            with self.subTest(length=len(message)):
+                self.animator._text_input = message
+                with patch.object(self.animator, "_text_font", wraps=self.animator._text_font) as font, patch("src.realtime_conversation.time.monotonic", return_value=2), patch("pygame.draw.line", wraps=pygame.draw.line) as draw_line:
+                    self.animator._draw_console("idle")
+                    self.assertEqual(font.render.call_args.args[0], message[::-1])
+                area = self.animator._text_input_rect.inflate(-18, -8)
+                expected_x = max(area.x, area.right - self.animator._text_font.size(message)[0] - 2)
+                self.assertTrue(any(call.args[2] == (expected_x, area.y + 3) for call in draw_line.call_args_list))
+
+    def test_multilingual_wrapping_preserves_logical_order(self):
+        for word in ("\u05e9\u05dc\u05d5\u05dd", "\u041f\u0440\u0438\u0432\u0435\u0442"):
+            text = word * 100
+            lines = wrap_text(text, self.animator._status_font, 438)
+            self.assertGreater(len(lines), 1)
+            self.assertEqual("".join(lines), text)
+            self.assertTrue(all(self.animator._status_font.size(line)[0] <= 438 for line in lines))
+        self.assertTrue(is_rtl("123 \u05e9\u05dc\u05d5\u05dd"))
+        self.assertFalse(is_rtl("\u041f\u0440\u0438\u0432\u0435\u0442"))
+        self.assertFalse(is_rtl("123"))
 
     def test_long_evidence_is_scrollable(self):
         self.animator.show_test_result(Test("Detailed " * 20, "longfinding" * 150))
