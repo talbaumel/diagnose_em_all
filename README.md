@@ -137,6 +137,10 @@ During a diagnosis battle:
 - Click Care Plan or press F4 to add prescriptions, add referrals, or review recorded orders.
 - After confirming a diagnosis, the Diagnose button becomes Finish Visit (also F2). Confirm to end the call and open the scorecard.
 
+Chat input and transcripts support Russian and Hebrew, including right-to-left
+Hebrew text mixed with English and numbers. Chat uses bundled DejaVu Sans fonts
+so no system font installation is needed; their license is in [data/fonts/LICENSE](data/fonts/LICENSE).
+
 Only an explicit diagnosis submission followed by Finish Visit can close a case.
 Mentioning a diagnosis in voice or text chat does not count, and the patient model
 cannot declare a win. Diagnosis submissions
