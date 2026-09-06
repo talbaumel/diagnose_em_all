@@ -13,6 +13,9 @@ import pygame
 from src.animation_assets import load_atlas
 from src.game_progress import Progress, ProgressStore
 from src.game_ui import ChoiceMenu
+from src.patient_performance import PerformanceProfile
+from src.voice_profile import VoiceProfile
+from src.cue_catalog import CueChoice
 from src.realtime_conversation import (
     HOSPITAL_MAP_IMAGE,
     PLAYER_FRAME_SIZE,
@@ -67,14 +70,18 @@ class PatientScenario:
     patient_type: PatientType
     tests: tuple[Test, ...]
     source: Path
+    performance_profile: PerformanceProfile | None = None
 
     def conversation_parameters(self) -> dict[str, Any]:
-        return {
+        parameters = {
             "system_prompts": self.system_prompts,
             "disease": self.disease,
             "patient_type": self.patient_type,
             "tests": self.tests,
         }
+        if self.performance_profile is not None:
+            parameters["performance_profile"] = self.performance_profile
+        return parameters
 
 
 @dataclass(frozen=True)
@@ -164,9 +171,9 @@ def load_patient_scenario(path: Path) -> PatientScenario:
         raise ValueError(f"Patient prompt must contain a JSON object: {path}")
 
     expected_keys = {"system_prompts", "disease", "patient_type", "tests"}
-    if set(data) != expected_keys:
+    if not expected_keys <= set(data) or set(data) - expected_keys - {"performance_profile"}:
         raise ValueError(
-            f"Patient prompt must contain exactly {sorted(expected_keys)}: {path}"
+            f"Patient prompt must contain {sorted(expected_keys)} and optional performance_profile: {path}"
         )
 
     system_prompts = data["system_prompts"]
@@ -202,12 +209,29 @@ def load_patient_scenario(path: Path) -> PatientScenario:
     except (TypeError, ValueError) as error:
         raise ValueError(f"Invalid test configuration: {path}") from error
 
+    profile = None
+    if "performance_profile" in data:
+        try:
+            if not isinstance(data["performance_profile"], dict):
+                raise ValueError("performance_profile must be an object")
+            profile_data = dict(data["performance_profile"])
+            if "voice" in profile_data:
+                profile_data["voice"] = VoiceProfile.from_json(profile_data["voice"])
+            if "cues" in profile_data:
+                if not isinstance(profile_data["cues"], list):
+                    raise ValueError("cues must be a list")
+                profile_data["cues"] = tuple(CueChoice.from_json(item) for item in profile_data["cues"])
+            profile = PerformanceProfile(**profile_data)
+        except (TypeError, ValueError) as error:
+            raise ValueError(f"Invalid performance profile: {path}: {error}") from error
+
     return PatientScenario(
         system_prompts=system_prompts,
         disease=disease,
         patient_type=patient_type,
         tests=tests,
         source=path,
+        performance_profile=profile,
     )
 
 

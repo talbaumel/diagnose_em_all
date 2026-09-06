@@ -1,0 +1,28 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Start Diagnose 'Em All",
+			"type": "shell",
+			"command": "${workspaceFolder}/.venv/bin/python",
+			"args": [
+				"-m",
+				"src.debug_example"
+			],
+			"isBackground": true,
+			"problemMatcher": []
+		},
+		{
+			"label": "Test Common Cold Kid",
+			"type": "shell",
+			"command": "${workspaceFolder}/.venv/bin/python",
+			"args": [
+				"-m",
+				"src.debug_example",
+				"data/prompts/01_common_cold_kid.json"
+			],
+			"isBackground": true,
+			"problemMatcher": []
+		}
+	]
+}

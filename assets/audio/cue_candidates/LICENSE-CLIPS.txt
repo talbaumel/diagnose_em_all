@@ -1,0 +1,48 @@
+Candidate clip licensing and attribution
+========================================
+
+All nine source recordings in originals/ are listed as CC0 1.0 in the official
+FSD50K dev_clips_info_FSD50K.json metadata retrieved from:
+https://zenodo.org/records/4060432
+
+CC0 1.0 Universal:
+https://creativecommons.org/publicdomain/zero/1.0/
+https://creativecommons.org/publicdomain/zero/1.0/legalcode
+
+Source contributors and Freesound IDs:
+- davep: 368494 (rejected as too quiet)
+- SoundsForHim: 412854, 399619, 399642
+- SoundCollectah: 167642 (rejected for full-scale samples)
+- Manicciola: 120793 (rejected for full-scale samples)
+- aldenroth2: 272031
+- husky70: 157297
+- organicmanpl: 198374
+
+The downloaded WAVs are the FSD50K distributed versions, retained without
+modification in originals/. They are not claimed to be the original creator
+uploads. The pinned Hugging Face mirror URLs, hashes, full source metadata,
+rejections, and excerpt transformations are recorded in SOURCES.json.
+
+FSD50K's dataset-level license is CC BY 4.0, separately from clip-level CC0.
+See LICENSE-DATASET.txt and the dataset attribution in SOURCES.json.
+
+FSD50K attribution:
+Eduardo Fonseca, Xavier Favory, Jordi Pons, Frederic Font and Xavier Serra,
+Music Technology Group, Universitat Pompeu Fabra.
+"FSD50K: An Open Dataset of Human-Labeled Sound Events", arXiv:2010.00475.
+
+The prepared cues were trimmed, resampled to mono 24 kHz PCM16, given short
+edge fades, and gain-adjusted for an internal listening comparison. No pitch
+shifting, voice cloning, denoising or medically validated transformation was
+applied by this project.
+
+The generated GPT voice in audition/voice_reference.wav and
+audition/voice_then_cues.wav is NOT covered by these CC0/FSD50K licenses.
+It is the user's existing Azure-generated game voice, included only for
+internal character-fit review. Do not label the entire combined preview CC0.
+
+These recordings are unreviewed candidates, not approved game assets.
+Copyright licenses do not settle privacy, publicity, performer-consent,
+clinical-appropriateness or character-fit questions. No creator endorsement
+or verified age or diagnosis is implied. Rejected sources are retained only
+for provenance and are excluded from the prepared cues and playlists.

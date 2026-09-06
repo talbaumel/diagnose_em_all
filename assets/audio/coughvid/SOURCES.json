@@ -1,0 +1,127 @@
+{
+  "dataset": "The COUGHVID crowdsourcing dataset: A corpus for the study of large-scale cough analysis algorithms",
+  "version": "3.0",
+  "creators": [
+    "Lara Orlandic",
+    "Tomas Teijeiro",
+    "David Atienza"
+  ],
+  "source": "https://zenodo.org/records/7024894",
+  "doi": "10.5281/zenodo.7024894",
+  "license": "CC-BY-4.0",
+  "license_url": "https://creativecommons.org/licenses/by/4.0/",
+  "license_file": "LICENSE.txt",
+  "attribution": "Cough recordings from COUGHVID v3.0 by Lara Orlandic, Tomas Teijeiro, and David Atienza, licensed under CC BY 4.0. Converted from WebM/Opus to mono 24 kHz, 16-bit PCM WAV. The dataset creators do not endorse this game.",
+  "retrieved_on": "2026-09-06",
+  "metadata_source": "https://zenodo.org/api/records/7024894/files/public_dataset_v3.zip/container/coughvid_20211012/metadata_compiled.csv",
+  "purpose": "dry_01_short.wav is used as illustrative conversational cough audio for the common-cold kid. Original clips remain audition samples. This is not a verified child or common-cold recording.",
+  "selection": "Three dry and three wet examples, each with one available expert annotation rating audio quality as good, and a cough detector score of at least 0.95. Recordings labeled pseudocough were excluded.",
+  "cautions": [
+    "Dry/wet and severity are dataset annotator labels, not independent clinical verification or diagnoses.",
+    "The cough detector score is a machine estimate, not a probability that the cough type label is correct.",
+    "Full recordings were retained for audition. They have not been manually screened here for incidental speech or identifying content; review them before shipping.",
+    "Original loudness was not normalized. Start playback at a comfortable low volume.",
+    "Participant demographics, coordinates, and disease-status metadata are not bundled.",
+    "Review privacy and consent suitability before using research recordings in a released game."
+  ],
+  "processing": {
+    "format": "WAV",
+    "codec": "pcm_s16le",
+    "sample_rate_hz": 24000,
+    "channels": 1,
+    "bits_per_sample": 16,
+    "changes": "Decoded source audio, resampled to 24 kHz, converted to mono PCM, and removed source metadata. No trimming, splicing, denoising, gain adjustment, or pitch shifting.",
+    "command_template": "ffmpeg -i SOURCE.webm -map 0:a:0 -ac 1 -ar 24000 -c:a pcm_s16le -map_metadata -1 OUTPUT.wav"
+  },
+  "derived_clips": [
+    {
+      "file": "dry_01_short.wav",
+      "derived_from": "dry_01.wav",
+      "source_id": "005b8518-03ba-4bf5-86d2-005541442357",
+      "license": "CC-BY-4.0",
+      "duration_seconds": 1.31,
+      "trim_start_seconds": 2.13,
+      "trim_end_seconds": 3.44,
+      "gain_db": -6,
+      "fade_in_seconds": 0.01,
+      "fade_out_seconds": 0.02,
+      "selection": "First prominent burst, bounded using silence detection at -35 dB with a 120 ms minimum silence. Signal-based selection only; not perceptually screened or verified as a child's cough.",
+      "changes": "Trimmed, attenuated by 6 dB, and faded at both edges. No pitch shifting or voice matching. Original recording retained unchanged.",
+      "command": "ffmpeg -nostdin -n -i assets/audio/coughvid/dry_01.wav -af 'atrim=start=2.13:end=3.44,asetpts=PTS-STARTPTS,volume=-6dB,afade=t=in:st=0:d=0.01,afade=t=out:st=1.29:d=0.02' -ar 24000 -ac 1 -c:a pcm_s16le -map_metadata -1 assets/audio/coughvid/dry_01_short.wav"
+    }
+  ],
+  "clips": [
+    {
+      "file": "dry_01.wav",
+      "source_id": "005b8518-03ba-4bf5-86d2-005541442357",
+      "source_url": "https://zenodo.org/api/records/7024894/files/public_dataset_v3.zip/container/coughvid_20211012/005b8518-03ba-4bf5-86d2-005541442357.webm",
+      "source_sha256": "3b9e2e7de85c4a2884cd1408b8ff0acb83f5e71750282f164f32e43136d63344",
+      "cough_type": "dry",
+      "quality": "good",
+      "severity": "mild",
+      "annotation_count": 1,
+      "cough_detected": 0.9854,
+      "duration_seconds": 6.48
+    },
+    {
+      "file": "dry_02.wav",
+      "source_id": "00ce5b06-c302-4387-bbd7-86355a4a8c12",
+      "source_url": "https://zenodo.org/api/records/7024894/files/public_dataset_v3.zip/container/coughvid_20211012/00ce5b06-c302-4387-bbd7-86355a4a8c12.webm",
+      "source_sha256": "880d6e0586b4d421e23531ae1ed0ad6acf7c0982752ec0667e3da2eaa7b15a8a",
+      "cough_type": "dry",
+      "quality": "good",
+      "severity": "severe",
+      "annotation_count": 1,
+      "cough_detected": 0.99,
+      "duration_seconds": 9.36
+    },
+    {
+      "file": "dry_03.wav",
+      "source_id": "036d875c-d39b-45f1-a17f-7f7badf0aa42",
+      "source_url": "https://zenodo.org/api/records/7024894/files/public_dataset_v3.zip/container/coughvid_20211012/036d875c-d39b-45f1-a17f-7f7badf0aa42.webm",
+      "source_sha256": "9ee869d96f83f6d690332986c94ac2242866e35f51667fc8ceb05e2486638371",
+      "cough_type": "dry",
+      "quality": "good",
+      "severity": "mild",
+      "annotation_count": 1,
+      "cough_detected": 0.9914,
+      "duration_seconds": 9.9
+    },
+    {
+      "file": "wet_01.wav",
+      "source_id": "008ba489-31ad-44d8-856b-fcf72369dc46",
+      "source_url": "https://zenodo.org/api/records/7024894/files/public_dataset_v3.zip/container/coughvid_20211012/008ba489-31ad-44d8-856b-fcf72369dc46.webm",
+      "source_sha256": "82a7be917c0346ef9c28437b7ba988469ce7a52b9004251610f1782f80f76042",
+      "cough_type": "wet",
+      "quality": "good",
+      "severity": "mild",
+      "annotation_count": 1,
+      "cough_detected": 0.9962,
+      "duration_seconds": 9.78
+    },
+    {
+      "file": "wet_02.wav",
+      "source_id": "01f97898-9ec4-480b-9fcc-a9daa737106d",
+      "source_url": "https://zenodo.org/api/records/7024894/files/public_dataset_v3.zip/container/coughvid_20211012/01f97898-9ec4-480b-9fcc-a9daa737106d.webm",
+      "source_sha256": "4d2860fc14dd3b4c838d4cba80f2ac2124b6aeeacaf404c309ff9b597dc8697e",
+      "cough_type": "wet",
+      "quality": "good",
+      "severity": "unknown",
+      "annotation_count": 1,
+      "cough_detected": 0.9834,
+      "duration_seconds": 9.84
+    },
+    {
+      "file": "wet_03.wav",
+      "source_id": "031fd54a-87b5-4223-9af6-60985127fb7a",
+      "source_url": "https://zenodo.org/api/records/7024894/files/public_dataset_v3.zip/container/coughvid_20211012/031fd54a-87b5-4223-9af6-60985127fb7a.webm",
+      "source_sha256": "05f9ce2f19e62ef3556be92302085f32f051cf56826482e507cc809531bf6785",
+      "cough_type": "wet",
+      "quality": "good",
+      "severity": "mild",
+      "annotation_count": 1,
+      "cough_detected": 0.9777,
+      "duration_seconds": 5.1
+    }
+  ]
+}

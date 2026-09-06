@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "dataset": "FSD50K",
+  "dataset_url": "https://zenodo.org/records/4060432",
+  "metadata_url": "https://zenodo.org/api/records/4060432/files/FSD50K.metadata.zip/content",
+  "mirror": "https://huggingface.co/datasets/Fhrozen/FSD50k",
+  "mirror_revision": "ccf1acaff12f3f4a4c10052dddafbb6d22152c9b",
+  "source_ids": ["368494", "412854", "399619", "167642", "120793", "272031", "157297", "198374", "399642"],
+  "rejected_sources": {
+    "368494": "Very quiet source: peak approximately -55 dBFS, mean approximately -73 dBFS. Do not amplify into a gameplay asset.",
+    "167642": "501 full-scale PCM samples. Source clipping risk; attenuation cannot restore missing waveform detail.",
+    "120793": "36 full-scale PCM samples. Source clipping risk; attenuation cannot restore missing waveform detail."
+  },
+  "selection_method": "Provisional excerpts chosen from author descriptions and signal-based silence inspection (-35 dB, 120 ms). Not perceptually screened; preserve originals for review and possible retrimming.",
+  "cues": [
+    {"id": "sniffle_01", "kind": "sniffle", "source_id": "412854", "start_seconds": 0.5, "end_seconds": 1.7, "target_active_rms_dbfs": -32, "caption": "[sniffles]", "note": "First sniff from a paired recording. Same contributor as throat_clear_01 and sigh_01."},
+    {"id": "sniffle_02", "kind": "sniffle", "source_id": "412854", "start_seconds": 2.9, "end_seconds": 3.55, "target_active_rms_dbfs": -32, "caption": "[sniffles]", "note": "Second sniff from the same recording; compare which better fits the kid."},
+    {"id": "sniffle_03", "kind": "sniffle", "source_id": "272031", "start_seconds": 0.05, "end_seconds": 0.8, "target_active_rms_dbfs": -32, "caption": "[sniffles]", "note": "Alternate contributor; relatively quiet source, gain capped at +12 dB."},
+    {"id": "sneeze_01", "kind": "sneeze", "source_id": "157297", "start_seconds": 0.65, "end_seconds": 4.25, "target_active_rms_dbfs": -24, "caption": "[sneezes]", "note": "Retains both activity clusters and intervening pause; review inhale/sneeze boundaries. Creator reports prior noise reduction."},
+    {"id": "sneeze_02", "kind": "sneeze", "source_id": "198374", "start_seconds": 0.3, "end_seconds": 2.6, "target_active_rms_dbfs": -24, "caption": "[sneezes]", "note": "Alternate sneeze sequence; no age or diagnosis inferred."},
+    {"id": "throat_clear_01", "kind": "throat_clear", "source_id": "399619", "start_seconds": 0.65, "end_seconds": 2.15, "target_active_rms_dbfs": -28, "caption": "[clears throat]", "note": "Author describes attention-getting throat clearing, not illness. Review gentleness and character fit."},
+    {"id": "sigh_01", "kind": "sigh", "source_id": "399642", "start_seconds": 0.4, "end_seconds": 2.3, "target_active_rms_dbfs": -32, "caption": "[sighs]", "note": "Optional acting cue only. Author describes a deep sigh, not fatigue or respiratory disease."}
+  ]
+}

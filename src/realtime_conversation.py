@@ -33,6 +33,9 @@ from websockets.exceptions import InvalidStatus, WebSocketException
 
 from src.azure_auth import AzureSignInRequired, GameCredential
 from src.game_ui import ChoiceMenu, wrap_text
+from src.audio_playback import AudioPlaybackError, DeviceSink
+from src.conversation_runtime import ConversationRuntime
+from src.patient_performance import PerformanceProfile
 
 REALTIME_URL = (
     "wss://tabaumel-resource.openai.azure.com/openai/v1/realtime"
@@ -205,12 +208,18 @@ PATIENT_VOICES = {
 class Test:
     description: str
     results: str
+    audio: str | None = None
 
     def __post_init__(self) -> None:
         if not self.description.strip():
             raise ValueError("Test description must not be empty")
         if not self.results.strip():
             raise ValueError("Test results must not be empty")
+        if self.audio is not None:
+            if not isinstance(self.audio, str) or not self.audio.strip():
+                raise ValueError("Test audio must be a non-empty WAV path")
+            if Path(self.audio).suffix.casefold() != ".wav":
+                raise ValueError("Test audio must be a WAV file")
 
     @property
     def image_path(self) -> Path | None:
@@ -222,6 +231,13 @@ class Test:
         if not path.is_file():
             raise FileNotFoundError(f"Evidence image not found: {path}")
         return path
+
+    @property
+    def audio_path(self) -> Path | None:
+        if self.audio is None:
+            return None
+        path = Path(self.audio).expanduser()
+        return path if path.is_absolute() else PROJECT_ROOT / path
 
 
 PATIENT_TYPES = tuple(patient_type.value for patient_type in PatientType)
@@ -724,6 +740,10 @@ class PatientAnimator:
         self._ready = False
         self._set_text_focus(False)
         self._menu = ChoiceMenu("CONNECTION UNAVAILABLE", ("Retry", "Return to Hospital"), message)
+
+    def show_audio_error(self, message: str) -> None:
+        self.show_error(message)
+        self._menu = ChoiceMenu("AUDIO UNAVAILABLE", ("Retry", "Return to Hospital"), message)
 
     def show_sign_in(self, message: str, *, pending: bool = False) -> None:
         self._ready = False
@@ -1298,6 +1318,7 @@ async def _conversation_session(
     stop: asyncio.Event,
     *,
     sign_in: bool = False,
+    performance_profile: PerformanceProfile | None = None,
 ) -> bool:
     credential = GameCredential(sign_in=sign_in)
     test_tools, tests_by_tool = _test_tools(tests)
@@ -1321,7 +1342,7 @@ async def _conversation_session(
                             "type": "realtime",
                             "instructions": _patient_instructions(
                                 system_prompt, disease
-                            ),
+                            ) + ("\n\n" + performance_profile.instructions if performance_profile else ""),
                             "output_modalities": ["audio"],
                             "tools": [
                                 {
@@ -1338,6 +1359,7 @@ async def _conversation_session(
                                     },
                                 },
                                 *test_tools,
+                                *(performance_profile.cue_tools if performance_profile else []),
                             ],
                             "tool_choice": "auto",
                             "audio": {
@@ -1352,7 +1374,7 @@ async def _conversation_session(
                                         "threshold": 0.5,
                                         "prefix_padding_ms": 300,
                                         "silence_duration_ms": 500,
-                                        "create_response": True,
+                                        "create_response": False,
                                         "interrupt_response": False,
                                     },
                                 },
@@ -1384,14 +1406,14 @@ async def _conversation_session(
 
             loop = asyncio.get_running_loop()
             audio_queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=20)
-            assistant_speaking = asyncio.Event()
-            cancelled_response = asyncio.Event()
+            microphone_error: asyncio.Future[None] = loop.create_future()
 
             def enqueue_audio(audio: bytes) -> None:
                 try:
                     audio_queue.put_nowait(audio)
                 except asyncio.QueueFull:
-                    pass
+                    if not microphone_error.done():
+                        microphone_error.set_exception(RealtimeSessionError("Microphone queue overflow; retry the consultation"))
 
             def microphone_callback(
                 input_data: Any,
@@ -1406,190 +1428,124 @@ async def _conversation_session(
                     audio = b"\x00" * len(audio)
                 loop.call_soon_threadsafe(enqueue_audio, audio)
 
-            with (
-                _microphone_stream(microphone_callback) as input_stream,
-                sd.RawOutputStream(
-                    samplerate=SAMPLE_RATE,
-                    channels=CHANNELS,
-                    dtype="int16",
-                ) as output_stream,
-            ):
-                animator.set_microphone_available(input_stream is not None)
-                animator._ready = True
-                print(
-                    "Conversation started. Diagnose the patient or press Ctrl+C."
-                    if input_stream is not None
-                    else "Conversation started in text-only mode."
+            sink = DeviceSink()
+            try:
+                runtime = ConversationRuntime(
+                    websocket, animator, stop, tests_by_tool, sink,
+                    profile=performance_profile,
                 )
-
-                async def send_microphone_audio() -> None:
-                    while not stop.is_set():
-                        audio = await audio_queue.get()
-                        if animator.push_to_talk and assistant_speaking.is_set():
-                            cancelled_response.set()
-                            assistant_speaking.clear()
-                            animator.set_talking(False)
-                            await websocket.send(
-                                json.dumps({"type": "response.cancel"})
-                            )
-                        await websocket.send(
-                            json.dumps(
-                                {
-                                    "type": "input_audio_buffer.append",
-                                    "audio": base64.b64encode(audio).decode("ascii"),
-                                }
-                            )
-                        )
-
-                async def send_text_messages() -> None:
-                    while not stop.is_set():
-                        message = await animator.next_text_message()
-                        if animator.won or animator.evidence_open or animator._menu is not None:
-                            continue
-                        print(f"\nYou: {message}")
-                        if assistant_speaking.is_set():
-                            cancelled_response.set()
-                            assistant_speaking.clear()
-                            animator.set_talking(False)
-                            await websocket.send(
-                                json.dumps({"type": "response.cancel"})
-                            )
-                        await websocket.send(
-                            json.dumps(
-                                {
-                                    "type": "conversation.item.create",
-                                    "item": {
-                                        "type": "message",
-                                        "role": "user",
-                                        "content": [
-                                            {
-                                                "type": "input_text",
-                                                "text": message,
-                                            }
-                                        ],
-                                    },
-                                }
-                            )
-                        )
-                        await websocket.send(json.dumps({"type": "response.create"}))
-                        animator._sending = False
-                        animator._sent_until = time.monotonic() + 1.2
-
-                async def receive_events() -> None:
-                    win_reported = False
-                    async for raw_message in websocket:
-                        event = json.loads(raw_message)
-                        event_type = event.get("type")
-
-                        if event_type == "response.output_audio.delta":
-                            if cancelled_response.is_set():
-                                continue
-                            if not assistant_speaking.is_set():
-                                assistant_speaking.set()
-                                while not audio_queue.empty():
-                                    audio_queue.get_nowait()
-                            animator.set_talking(True)
-                            audio = base64.b64decode(event["delta"])
-                            await asyncio.to_thread(output_stream.write, audio)
-                        elif event_type in {
-                            "response.output_audio.done",
-                            "response.done",
-                        }:
-                            animator.set_talking(False)
-                            assistant_speaking.clear()
-                            cancelled_response.clear()
-                        elif event_type == "response.output_audio_transcript.delta":
-                            if not cancelled_response.is_set():
-                                delta = event.get("delta", "")
-                                animator.add_transcript("Patient", delta, event.get("item_id") or event.get("response_id"), append=True)
-                                print(delta, end="", flush=True)
-                        elif event_type == "response.output_audio_transcript.done":
-                            if not cancelled_response.is_set():
-                                animator.add_transcript("Patient", event.get("transcript", ""), event.get("item_id") or event.get("response_id"))
-                        elif (
-                            event_type == "response.function_call_arguments.done"
-                            and event.get("name") == "win"
-                            and not win_reported
-                        ):
-                            win_reported = True
-                            animator.show_win()
-                            print("\nYOU WIN")
-                            await websocket.send(
-                                json.dumps(
-                                    {
-                                        "type": "conversation.item.create",
-                                        "item": {
-                                            "type": "function_call_output",
-                                            "call_id": event["call_id"],
-                                            "output": json.dumps({"won": True}),
-                                        },
-                                    }
-                                )
-                            )
-                            await asyncio.sleep(RELIEVED_DURATION_SECONDS)
-                            stop.set()
-                            return
-                        elif (
-                            event_type == "response.function_call_arguments.done"
-                            and event.get("name") in tests_by_tool
-                        ):
-                            test = tests_by_tool[event["name"]]
-                            animator.show_test_result(test)
-                            print(f"\n{test.description}: {test.results}")
-                            await websocket.send(
-                                json.dumps(
-                                    {
-                                        "type": "conversation.item.create",
-                                        "item": {
-                                            "type": "function_call_output",
-                                            "call_id": event["call_id"],
-                                            "output": json.dumps(
-                                                {
-                                                    "test": test.description,
-                                                    "result": test.results,
-                                                }
-                                            ),
-                                        },
-                                    }
-                                )
-                            )
-                            await animator.wait_for_evidence_close()
-                            await websocket.send(json.dumps({"type": "response.create"}))
-                        elif event_type == (
-                            "conversation.item.input_audio_transcription.completed"
-                        ):
-                            transcript = event.get("transcript", "")
-                            animator.add_transcript("You", transcript, event.get("item_id"))
-                            print(f"\nYou: {transcript}")
-                        elif event_type == "error":
-                            error = event.get("error", {})
-                            if _is_inactive_cancellation(error):
-                                cancelled_response.clear()
-                                continue
-                            raise RealtimeSessionError(
-                                f"Realtime API error: {error.get('message', error)}"
-                            )
-                    if not stop.is_set():
-                        raise ConnectionError("The patient connection closed unexpectedly")
-
-                text_sender = asyncio.create_task(send_text_messages())
-                receiver = asyncio.create_task(receive_events())
-                stopped = asyncio.create_task(stop.wait())
-                tasks = {text_sender, receiver, stopped}
-                if input_stream is not None:
-                    tasks.add(asyncio.create_task(send_microphone_audio()))
-                try:
-                    done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-                    for task in done:
-                        task.result()
-                finally:
-                    for task in tasks:
-                        task.cancel()
-                    output_stream.abort()
-                    await asyncio.gather(*tasks, return_exceptions=True)
+                await _run_connected_session(
+                    websocket, animator, stop, runtime, microphone_callback,
+                    audio_queue, microphone_error,
+                )
                 return animator.won
+            finally:
+                sink.close()
+                if not microphone_error.done():
+                    microphone_error.cancel()
+                elif not microphone_error.cancelled():
+                    microphone_error.exception()
     finally:
         await credential.close()
+
+
+async def _run_connected_session(
+    websocket, animator: PatientAnimator, stop: asyncio.Event,
+    runtime: ConversationRuntime, microphone_callback, audio_queue, microphone_error,
+) -> None:
+    with _microphone_stream(microphone_callback) as input_stream:
+        animator.set_microphone_available(input_stream is not None)
+        animator._ready = True
+        print("Conversation started." if input_stream is not None else "Conversation started in text-only mode.")
+
+        async def send_microphone_audio() -> None:
+            while not stop.is_set():
+                audio = await audio_queue.get()
+                await runtime.send({
+                    "type": "input_audio_buffer.append",
+                    "audio": base64.b64encode(audio).decode("ascii"),
+                })
+
+        async def send_text_messages() -> None:
+            while not stop.is_set():
+                message = await animator.next_text_message()
+                if animator.won or animator.evidence_open or animator._menu is not None:
+                    continue
+                print(f"\nYou: {message}")
+                await runtime.interrupt(new_turn=True)
+                runtime.user_talking = False
+                while not audio_queue.empty():
+                    audio_queue.get_nowait()
+                await runtime.send({"type": "input_audio_buffer.clear"})
+                runtime.queue_user(message)
+                animator._sending = False
+                animator._sent_until = time.monotonic() + 1.2
+
+        async def watch_push_to_talk() -> None:
+            pressed = False
+            while not stop.is_set():
+                if animator.push_to_talk and not pressed:
+                    runtime.user_talking = True
+                    await runtime.interrupt(new_turn=True)
+                pressed = animator.push_to_talk
+                # VAD commits the voice turn; releasing Shift alone must not
+                # create a response for silence.
+                await asyncio.sleep(0.005)
+
+        async def receive_events() -> None:
+            async for raw_message in websocket:
+                event = json.loads(raw_message)
+                event_type = event.get("type")
+                if event_type == "input_audio_buffer.speech_started":
+                    if not runtime.user_talking:
+                        runtime.user_talking = True
+                        await runtime.interrupt(new_turn=True)
+                elif event_type == "input_audio_buffer.speech_stopped":
+                    runtime.user_talking = False
+                elif event_type == "input_audio_buffer.committed":
+                    runtime.user_talking = False
+                    runtime.queue_user(None)
+                elif event_type == "conversation.item.input_audio_transcription.completed":
+                    transcript = event.get("transcript", "")
+                    animator.add_transcript("You", transcript, event.get("item_id"))
+                    print(f"\nYou: {transcript}")
+                elif event_type == "error":
+                    error = event.get("error", {})
+                    if _is_inactive_cancellation(error):
+                        continue
+                    if error.get("event_id") in runtime.truncate_events and error.get("code") in (
+                        "unsupported_event", "unknown_event_type", "invalid_event",
+                        "conversation_item_truncate_not_supported",
+                    ):
+                        runtime.truncate_supported = False
+                        print("Server does not support heard-audio truncation.")
+                        continue
+                    raise RealtimeSessionError(f"Realtime API error: {error.get('message', error)}")
+                else:
+                    runtime.handle(event)
+            if not stop.is_set():
+                raise ConnectionError("The patient connection closed unexpectedly")
+
+        tasks = {
+            asyncio.create_task(send_text_messages()),
+            asyncio.create_task(receive_events()),
+            asyncio.create_task(stop.wait()),
+            asyncio.create_task(runtime.playback.run()),
+            asyncio.create_task(runtime.finish_responses()),
+            asyncio.create_task(runtime.send_user_requests()),
+            asyncio.create_task(runtime.process_speech()),
+            asyncio.create_task(watch_push_to_talk()),
+        }
+        if input_stream is not None:
+            tasks.add(asyncio.create_task(send_microphone_audio()))
+        try:
+            done, _ = await asyncio.wait(tasks | {microphone_error}, return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                task.result()
+        finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
 
 
 async def _run_conversation(
@@ -1600,6 +1556,7 @@ async def _run_conversation(
     *,
     window: pygame.Surface | None = None,
     screen: pygame.Surface | None = None,
+    performance_profile: PerformanceProfile | None = None,
 ) -> ConversationResult:
     sign_in = False
     while True:
@@ -1607,13 +1564,14 @@ async def _run_conversation(
         animator._ready = False
         stop = asyncio.Event()
         animation = asyncio.create_task(animator.run(stop))
-        session = asyncio.create_task(_conversation_session(system_prompt, disease, patient_index, tests, animator, stop, sign_in=sign_in))
+        profile_options = {"performance_profile": performance_profile} if performance_profile is not None else {}
+        session = asyncio.create_task(_conversation_session(system_prompt, disease, patient_index, tests, animator, stop, sign_in=sign_in, **profile_options))
         try:
             done, pending = await asyncio.wait({animation, session}, return_when=asyncio.FIRST_COMPLETED)
             if session in done:
                 try:
                     session.result()
-                except (AzureError, WebSocketException, OSError, TimeoutError, sd.PortAudioError, RealtimeSessionError) as error:
+                except (AzureError, WebSocketException, OSError, TimeoutError, sd.PortAudioError, RealtimeSessionError, AudioPlaybackError) as error:
                     print(f"Consultation unavailable: {error}")
                     if not animator.won and not stop.is_set():
                         animator.close_test_result()
@@ -1623,6 +1581,8 @@ async def _run_conversation(
                             animator.show_sign_in(
                                 "Azure denied access. Sign in with an authorized account, or ask the resource owner for access."
                             )
+                        elif isinstance(error, (AudioPlaybackError, sd.PortAudioError)):
+                            animator.show_audio_error(str(error))
                         else:
                             animator.show_error("Check the network and audio output, then retry.")
                         await animation
@@ -1652,6 +1612,7 @@ def start_consultation(
     *,
     window: pygame.Surface | None = None,
     screen: pygame.Surface | None = None,
+    performance_profile: PerformanceProfile | None = None,
 ) -> ConversationResult:
     try:
         return asyncio.run(
@@ -1662,6 +1623,7 @@ def start_consultation(
                 tests,
                 window=window,
                 screen=screen,
+                performance_profile=performance_profile,
             )
         )
     except KeyboardInterrupt:
@@ -1677,9 +1639,10 @@ def strat_conversation(
     *,
     window: pygame.Surface | None = None,
     screen: pygame.Surface | None = None,
+    performance_profile: PerformanceProfile | None = None,
 ) -> bool:
     """Start a patient conversation with diagnostic tools and result popups."""
-    return start_consultation(system_prompts, disease, patient_type, tests, window=window, screen=screen) == ConversationResult.SOLVED
+    return start_consultation(system_prompts, disease, patient_type, tests, window=window, screen=screen, performance_profile=performance_profile) == ConversationResult.SOLVED
 
 
 if __name__ == "__main__":
