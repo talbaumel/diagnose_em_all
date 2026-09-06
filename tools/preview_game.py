@@ -10,6 +10,8 @@ import pygame
 from src.hospital_game import HospitalNavigator, load_patient_scenarios
 from src.realtime_conversation import PatientAnimator, Test
 from src.game_ui import ChoiceMenu
+from src.care_plan_ui import CareOrderForm
+from src.consultation_review import AxisScore, ConsultationMetrics, ConsultationScorecard, SCORE_AXES
 
 
 def main() -> None:
@@ -72,7 +74,9 @@ def main() -> None:
                 column = state_index * 4 + frame_index
                 patients.blit(frame, frame.get_rect(midbottom=(column * 100 + 50, row * 128 + 112)))
     pygame.image.save(patients, str(arguments.output_dir / "patient_frames.png"))
-    animator = PatientAnimator(0, window=window)
+    animator = PatientAnimator(0, window=window, disease="common cold")
+    animator.metrics = ConsultationMetrics(started_at=time.monotonic() - 125)
+    animator.metrics.discover_test("Temperature", "38 C. Mild fever.")
     animator._scene_started_at = time.monotonic() - 1
     animator.add_transcript("You", "How have you been feeling today?")
     animator.add_transcript("Patient", "My nose is stuffy and my throat hurts. I started feeling sick yesterday.", "preview")
@@ -85,9 +89,58 @@ def main() -> None:
     animator.draw(0.3)
     pygame.image.save(window, str(arguments.output_dir / "long_evidence.png"))
     animator.close_test_result()
-    animator.show_win()
+    animator._open_diagnosis()
+    animator._diagnosis_input = "migraine"
+    animator.draw(0.3)
+    pygame.image.save(window, str(arguments.output_dir / "diagnosis.png"))
+    animator._submit_diagnosis()
+    animator.draw(0.3)
+    pygame.image.save(window, str(arguments.output_dir / "diagnosis_retry.png"))
+    animator._diagnosis_input = "common cold"
+    animator._submit_diagnosis()
+    animator.draw(0.3)
+    pygame.image.save(window, str(arguments.output_dir / "diagnosis_confirmed.png"))
+    animator._open_care_menu()
+    animator.draw(0.3)
+    pygame.image.save(window, str(arguments.output_dir / "care_menu.png"))
+    animator._menu = None
+    animator._care_form = CareOrderForm("prescription")
+    animator._care_form.values = ["Example medication", "Directions entered by clinician", "Symptom relief"]
+    animator.draw(0.3)
+    pygame.image.save(window, str(arguments.output_dir / "prescription.png"))
+    prescription = animator._care_form.submit()
+    if prescription is not None:
+        animator.metrics.care_plan.add(prescription)
+    animator._care_form = CareOrderForm("referral")
+    animator._care_form.values = ["Specialist clinic", "Further assessment", "Routine"]
+    animator.draw(0.3)
+    pygame.image.save(window, str(arguments.output_dir / "referral.png"))
+    referral = animator._care_form.submit()
+    if referral is not None:
+        animator.metrics.care_plan.add(referral)
+    animator._care_form = None
+    animator._finish_consultation()
     animator.draw(0.3)
     pygame.image.save(window, str(arguments.output_dir / "solved.png"))
+    animator._review_open = True
+    animator._available_test_count = 2
+    animator._review_loading = True
+    animator.draw()
+    pygame.image.save(window, str(arguments.output_dir / "review_loading.png"))
+    animator._review_loading = False
+    animator._scorecard = ConsultationScorecard(
+        "You asked clear questions and acknowledged the patient's concerns. Explore relevant warning signs before concluding.",
+        tuple(AxisScore(key, 3, "You asked about symptom duration. Follow up on the patient's main concern and explain how the findings support your conclusion.") for key in SCORE_AXES),
+    )
+    animator.draw()
+    pygame.image.save(window, str(arguments.output_dir / "review.png"))
+    animator._review_scroll = animator._review_max_scroll
+    animator.draw()
+    pygame.image.save(window, str(arguments.output_dir / "review_bottom.png"))
+    animator._review_scroll = 0
+    animator._review_error = "Scoring could not be completed. Your diagnosis remains confirmed."
+    animator.draw()
+    pygame.image.save(window, str(arguments.output_dir / "review_error.png"))
     animator.close()
     pygame.quit()
     loop.close()

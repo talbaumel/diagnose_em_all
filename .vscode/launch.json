@@ -2,7 +2,7 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Diagnose 'Em All: Game",
+            "name": "Diagnose Em' All: Game",
             "type": "debugpy",
             "request": "launch",
             "module": "src.debug_example",

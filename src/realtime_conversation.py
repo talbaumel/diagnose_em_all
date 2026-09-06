@@ -26,20 +26,35 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pygame
 import sounddevice as sd
 import websockets
+from azure.core.credentials import AccessToken
 from azure.core.exceptions import AzureError
 from azure.identity.aio import AzureCliCredential
-from websockets.exceptions import WebSocketException
+from websockets.exceptions import InvalidStatus, WebSocketException
 
 from src.game_ui import ChoiceMenu, wrap_text
+from src.care_plan import Prescription, Referral
+from src.care_plan_ui import CareOrderForm
+from src.consultation_review import (
+    REVIEW_TIMEOUT_SECONDS,
+    SCORE_AXES,
+    ConsultationMetrics,
+    ConsultationScorecard,
+    format_duration,
+    score_consultation,
+)
 
 REALTIME_URL = (
     "wss://tabaumel-resource.openai.azure.com/openai/v1/realtime"
     "?model=gpt-realtime-2.1"
 )
 AZURE_OPENAI_SCOPE = "https://cognitiveservices.azure.com/.default"
+AZURE_CLI_TIMEOUT_SECONDS = 60
+AZURE_TOKEN_REFRESH_MARGIN_SECONDS = 300
+_cached_realtime_token: AccessToken | None = None
 REALTIME_OPEN_TIMEOUT_SECONDS = 30
 REALTIME_CONNECT_ATTEMPTS = 3
 SAMPLE_RATE = 24_000
@@ -60,7 +75,7 @@ CONSULTATION_ROOM_IMAGE = (
 )
 WORLD_DISPLAY_SIZE = (480, 374)
 SCREEN_SIZE = (480, 480)
-WINDOW_SIZE = (720, 720)
+WINDOW_SIZE = (960, 960)
 IMAGE_SUFFIXES = {".bmp", ".gif", ".jpeg", ".jpg", ".png", ".webp"}
 UI_INK = (20, 32, 38)
 UI_PANEL = (22, 43, 46)
@@ -165,6 +180,7 @@ def animation_frame(
 
 class ConversationResult(str, Enum):
     SOLVED = "solved"
+    SOLVED_QUIT = "solved_quit"
     RETURNED = "returned"
     QUIT = "quit"
 
@@ -352,9 +368,19 @@ def _patient_instructions(system_prompt: str, disease: str) -> str:
         "even if the clinician asks what tests are available. "
         "When the clinician asks to perform one of the available diagnostic tests, "
         "call its matching tool immediately. Do not describe or invent the test "
-        "result yourself. When the clinician correctly diagnoses the patient, call "
-        "win exactly once."
+        "result yourself. Diagnosis submissions are handled separately by the game. "
+        "Do not judge guesses or declare a diagnosis correct during conversation. "
+        "Respond to the clinician's prescriptions and referrals as the patient, "
+        "asking relevant questions or expressing concerns. These are simulated care "
+        "decisions, not real orders. Do not certify medication safety or invent "
+        "allergies, age, weight or other medical facts absent from the case."
     )
+
+
+def _diagnosis_matches(submitted: str, disease: str) -> bool:
+    submitted_words = re.findall(r"\w+", submitted.casefold().replace("_", " "))
+    disease_words = re.findall(r"\w+", disease.casefold().replace("_", " "))
+    return bool(disease_words) and submitted_words == disease_words
 
 
 def _patient_index(patient_type: PatientType) -> int:
@@ -487,6 +513,7 @@ class PatientAnimator:
         *,
         window: pygame.Surface | None = None,
         screen: pygame.Surface | None = None,
+        disease: str | None = None,
     ) -> None:
         pygame.init()
         pygame.display.set_caption("Patient Conversation")
@@ -593,6 +620,33 @@ class PatientAnimator:
         self._evidence_closed.set()
         self._test_close_button = pygame.Rect(400, 48, 30, 30)
         self._won = False
+        self.metrics = ConsultationMetrics()
+        self._discovered_tests_button = pygame.Rect(326, 34, 138, 24)
+        self._review_open = False
+        self._review_loading = False
+        self._review_error = ""
+        self._scorecard: ConsultationScorecard | None = None
+        self._available_test_count = 0
+        self._review_scroll = 0
+        self._review_max_scroll = 0
+        self._review_retry = asyncio.Event()
+        self._review_retry_button = pygame.Rect(18, 428, 112, 36)
+        self._review_return_button = pygame.Rect(144, 428, 318, 36)
+        self._disease = disease
+        self._diagnosis_confirmed = asyncio.Event()
+        self._consultation_finished = asyncio.Event()
+        self._diagnosis_open = False
+        self._diagnosis_input = ""
+        self._diagnosis_feedback = ""
+        self._diagnosis_focus = 0
+        self._chat_was_focused = False
+        self._diagnose_button = pygame.Rect(18, 384, 124, 28)
+        self._care_button = pygame.Rect(154, 384, 124, 28)
+        self._care_form: CareOrderForm | None = None
+        self._care_chat_was_focused = False
+        self._diagnosis_input_rect = pygame.Rect(48, 178, 384, 40)
+        self._diagnosis_cancel_button = pygame.Rect(48, 282, 140, 40)
+        self._diagnosis_submit_button = pygame.Rect(204, 282, 228, 40)
         self._running = True
         self.quit_requested = False
         self.retry_requested = False
@@ -630,7 +684,7 @@ class PatientAnimator:
 
     @property
     def push_to_talk(self) -> bool:
-        return self._push_to_talk.is_set()
+        return self._push_to_talk.is_set() and not self._diagnosis_open and self._care_form is None
 
     @property
     def won(self) -> bool:
@@ -655,12 +709,81 @@ class PatientAnimator:
         self._relieved_until = time.monotonic() + RELIEVED_DURATION_SECONDS
 
     def show_win(self) -> None:
+        self.metrics.finish()
         self._won = True
+        self._diagnosis_open = False
         self._set_text_focus(False)
         self._menu = None
         self.show_relieved()
 
+    def _submit_diagnosis(self) -> None:
+        if not self._diagnosis_open or not self._ready or self.evidence_open or self.won or self._menu is not None:
+            return
+        submitted = self._diagnosis_input.strip()
+        if not submitted or self._disease is None:
+            return
+        self.add_transcript("Diagnosis", submitted)
+        if _diagnosis_matches(submitted, self._disease):
+            self._diagnosis_confirmed.set()
+            self._close_diagnosis()
+            self.add_transcript("Case", "Diagnosis confirmed.")
+        else:
+            self._diagnosis_feedback = "Not confirmed. Review the evidence and try again."
+            self.add_transcript("Case", self._diagnosis_feedback)
+
+    def _open_diagnosis(self) -> None:
+        if not self._ready or self.won or self.evidence_open or self._menu is not None or self._disease is None or self._care_form is not None:
+            return
+        if self._diagnosis_confirmed.is_set():
+            self._set_text_focus(False)
+            plan = self.metrics.care_plan
+            self._menu = ChoiceMenu("FINISH THIS VISIT?", ("Keep Consulting", "Finish Visit"), f"Diagnosis confirmed.\n{len(plan.prescriptions)} prescriptions / {len(plan.referrals)} referrals")
+            return
+        self._chat_was_focused = self._text_focused
+        self._set_text_focus(False)
+        self._diagnosis_open = True
+        self._diagnosis_feedback = ""
+        self._focus_diagnosis(0)
+
+    def _focus_diagnosis(self, focus: int) -> None:
+        self._diagnosis_focus = focus
+        if focus == 0:
+            pygame.key.start_text_input()
+        else:
+            pygame.key.stop_text_input()
+
+    def _close_diagnosis(self) -> None:
+        self._diagnosis_open = False
+        self._set_text_focus(self._chat_was_focused)
+
+    def _finish_consultation(self) -> None:
+        if not self._ready or self.won or not self._diagnosis_confirmed.is_set() or self.evidence_open or self._diagnosis_open or self._care_form is not None:
+            return
+        if self._sending or not self._text_messages.empty():
+            self.add_transcript("Case", "Message still pending.")
+            return
+        self.show_win()
+        self._consultation_finished.set()
+
+    def _open_care_menu(self) -> None:
+        if not self._ready or self.won or self.evidence_open or self._diagnosis_open or self._menu is not None or self._care_form is not None:
+            return
+        self._care_chat_was_focused = self._text_focused
+        self._set_text_focus(False)
+        plan = self.metrics.care_plan
+        self._menu = ChoiceMenu("CARE PLAN", ("Add Prescription", "Add Referral", "Review Orders", "Keep Consulting"), f"{len(plan.prescriptions)} prescriptions / {len(plan.referrals)} referrals")
+
+    def _record_care_order(self, order: Prescription | Referral) -> None:
+        if not self.metrics.care_plan.add(order):
+            self.add_transcript("Case", "This order is already recorded.")
+            return
+        message = order.message()
+        self._text_messages.put_nowait(message)
+        self.add_transcript("You", message)
+        self._sending = True
+
     def show_test_result(self, test: Test) -> None:
+        self._diagnosis_open = False
         self._set_text_focus(False)
         self._evidence_scroll = 0
         self._test_result = test
@@ -682,6 +805,10 @@ class PatientAnimator:
         self._push_to_talk.clear()
         self._evidence_closed.clear()
 
+    def _show_discovered_tests(self) -> None:
+        names = list(self.metrics.discovered_tests)
+        self.show_test_result(Test("Tests discovered", "\n".join(names) if names else "No tests discovered."))
+
     async def wait_for_evidence_close(self) -> None:
         await self._evidence_closed.wait()
 
@@ -689,7 +816,7 @@ class PatientAnimator:
         return await self._text_messages.get()
 
     def _submit_text(self) -> None:
-        if not self._ready or self.evidence_open or self.won or self._menu is not None:
+        if not self._ready or self.evidence_open or self.won or self._menu is not None or self._diagnosis_open or self._care_form is not None:
             return
         message = self._text_input.strip()
         if not message:
@@ -722,6 +849,8 @@ class PatientAnimator:
 
     def show_error(self, message: str) -> None:
         self._ready = False
+        self._care_form = None
+        self._diagnosis_open = False
         self._set_text_focus(False)
         self._menu = ChoiceMenu("CONNECTION UNAVAILABLE", ("Retry", "Return to Hospital"), message)
 
@@ -754,6 +883,8 @@ class PatientAnimator:
         self._test_result = None
         self._test_result_image = None
         self._evidence_closed.set()
+        if self._care_form is not None:
+            self._care_form.focus(self._care_form.focus_index)
 
     def _current_state(self) -> str:
         if time.monotonic() < self._relieved_until:
@@ -840,33 +971,11 @@ class PatientAnimator:
         self._screen.blit(eyebrow, (59, 12))
         self._screen.blit(patient_name, (59, 28))
 
-        status_text, status_color = self._status(state)
-        rendered_status = self._status_font.render(status_text, True, status_color)
-        status_width = rendered_status.get_width() + 30
-        status_rect = pygame.Rect(464 - status_width, 18, status_width, 28)
-        pygame.draw.rect(
-            self._screen,
-            (11, 25, 29),
-            status_rect,
-            border_radius=14,
-        )
-        pygame.draw.circle(
-            self._screen,
-            status_color,
-            (status_rect.x + 13, status_rect.centery),
-            4
-            + (
-                round((math.sin(time.monotonic() * 8) + 1) / 2)
-                if self.push_to_talk or state == "talking"
-                else 0
-            ),
-        )
-        self._screen.blit(
-            rendered_status,
-            rendered_status.get_rect(
-                midleft=(status_rect.x + 22, status_rect.centery)
-            ),
-        )
+        elapsed = self._status_font.render(f"TIME {format_duration(self.metrics.elapsed_seconds)}", True, UI_GOLD)
+        self._screen.blit(elapsed, elapsed.get_rect(topright=(464, 13)))
+        pygame.draw.rect(self._screen, UI_TEAL, self._discovered_tests_button, border_radius=5)
+        discovered = self._status_font.render(f"TESTS FOUND {len(self.metrics.discovered_tests)}", True, UI_WHITE)
+        self._screen.blit(discovered, discovered.get_rect(center=self._discovered_tests_button.center))
 
     def _draw_shadow(self, center: tuple[int, int], width: int) -> None:
         shadow_layer = pygame.Surface(SCREEN_SIZE, pygame.SRCALPHA)
@@ -955,8 +1064,13 @@ class PatientAnimator:
         pygame.draw.rect(self._screen, UI_TEAL, (0, 374, 480, 3))
         pygame.draw.rect(self._screen, UI_CORAL, (0, 374, 92, 3))
 
-        label = self._eyebrow_font.render("YOUR RESPONSE", True, UI_MUTED)
-        self._screen.blit(label, (18, 391))
+        enabled = self._ready and self._disease is not None and not self.won
+        pygame.draw.rect(self._screen, UI_TEAL if enabled else (91, 119, 116), self._diagnose_button, border_radius=5)
+        label = self._status_font.render("FINISH VISIT" if self._diagnosis_confirmed.is_set() else "DIAGNOSE", True, UI_WHITE)
+        self._screen.blit(label, label.get_rect(center=self._diagnose_button.center))
+        pygame.draw.rect(self._screen, UI_TEAL if enabled else (91, 119, 116), self._care_button, border_radius=5)
+        care_label = self._status_font.render("CARE PLAN", True, UI_WHITE)
+        self._screen.blit(care_label, care_label.get_rect(center=self._care_button.center))
         status_text, status_color = self._status(state)
         compact_status = self._status_font.render(status_text, True, status_color)
         status_x = 462 - compact_status.get_width()
@@ -1017,6 +1131,68 @@ class PatientAnimator:
             border_radius=5,
         )
         self._draw_send_icon()
+
+    def _draw_diagnosis(self) -> None:
+        overlay = pygame.Surface(SCREEN_SIZE, pygame.SRCALPHA)
+        overlay.fill((8, 20, 23, 166))
+        self._screen.blit(overlay, (0, 0))
+        pygame.draw.rect(self._screen, UI_PAPER, (28, 112, 424, 230), border_radius=8)
+        pygame.draw.rect(self._screen, UI_TEAL, (28, 112, 424, 6))
+        title = self._test_title_font.render("FINAL DIAGNOSIS", True, UI_INK)
+        self._screen.blit(title, (48, 137))
+        pygame.draw.rect(self._screen, UI_WHITE, self._diagnosis_input_rect, border_radius=5)
+        pygame.draw.rect(self._screen, UI_CORAL if self._diagnosis_focus == 0 else UI_MUTED, self._diagnosis_input_rect, width=2, border_radius=5)
+        area = self._diagnosis_input_rect.inflate(-18, -8)
+        text = self._text_font.render(self._diagnosis_input or "Diagnosis", True, UI_INK if self._diagnosis_input else UI_MUTED)
+        position = text.get_rect(midleft=(area.x, area.centery))
+        if self._diagnosis_input and position.width > area.width:
+            position.right = area.right - 3
+        previous_clip = self._screen.get_clip()
+        self._screen.set_clip(area)
+        self._screen.blit(text, position)
+        if self._diagnosis_focus == 0 and int(time.monotonic() * 2) % 2 == 0:
+            cursor_x = min(position.right + 2, area.right - 2) if self._diagnosis_input else area.x
+            pygame.draw.line(self._screen, UI_CORAL, (cursor_x, area.y + 3), (cursor_x, area.bottom - 3), 2)
+        self._screen.set_clip(previous_clip)
+        for index, line in enumerate(wrap_text(self._diagnosis_feedback, self._text_font, 384)):
+            self._screen.blit(self._text_font.render(line, True, UI_INK), (48, 230 + index * 19))
+        for focus, rectangle, label in (
+            (1, self._diagnosis_cancel_button, "Cancel"),
+            (2, self._diagnosis_submit_button, "Submit Diagnosis"),
+        ):
+            color = UI_TEAL if focus == 2 and self._diagnosis_input.strip() else (91, 119, 116)
+            pygame.draw.rect(self._screen, color, rectangle, border_radius=5)
+            if self._diagnosis_focus == focus:
+                pygame.draw.rect(self._screen, UI_CORAL, rectangle, width=2, border_radius=5)
+            rendered = self._text_font.render(label, True, UI_WHITE)
+            self._screen.blit(rendered, rendered.get_rect(center=rectangle.center))
+
+    def _handle_diagnosis_event(self, event: pygame.event.Event) -> None:
+        key = event.key if event.type == pygame.KEYDOWN else None
+        if key == pygame.K_ESCAPE:
+            self._close_diagnosis()
+        elif key == pygame.K_TAB:
+            direction = -1 if getattr(event, "mod", 0) & pygame.KMOD_SHIFT else 1
+            self._focus_diagnosis((self._diagnosis_focus + direction) % 3)
+        elif key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+            if self._diagnosis_focus == 1:
+                self._close_diagnosis()
+            elif self._diagnosis_focus in (0, 2):
+                self._submit_diagnosis()
+        elif self._diagnosis_focus == 0 and key == pygame.K_BACKSPACE:
+            self._diagnosis_input = self._diagnosis_input[:-1]
+            self._diagnosis_feedback = ""
+        elif self._diagnosis_focus == 0 and event.type == pygame.TEXTINPUT:
+            self._diagnosis_input += event.text
+            self._diagnosis_feedback = ""
+        elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+            position = self._screen_position(event.pos)
+            if self._diagnosis_input_rect.collidepoint(position):
+                self._focus_diagnosis(0)
+            elif self._diagnosis_cancel_button.collidepoint(position):
+                self._close_diagnosis()
+            elif self._diagnosis_submit_button.collidepoint(position):
+                self._submit_diagnosis()
 
     def _draw_scene_fade(self) -> None:
         now = time.monotonic()
@@ -1165,13 +1341,127 @@ class PatientAnimator:
         self._screen.blit(eyebrow, eyebrow.get_rect(center=(240, 225)))
         self._screen.blit(win_text, win_text.get_rect(center=(240, 260)))
         detail = self._text_font.render(
-            "Patient stabilized. Excellent work.",
+            "Diagnosis confirmed.",
             True,
             (83, 104, 101),
         )
         self._screen.blit(detail, detail.get_rect(center=(240, 300)))
 
+    def _draw_review(self) -> None:
+        self._screen.fill(UI_PAPER)
+        pygame.draw.rect(self._screen, UI_PANEL, (0, 0, 480, 92))
+        eyebrow = self._eyebrow_font.render(f"CASE {self._patient_number:02d} / MAI-Thinking-1", True, UI_GOLD)
+        self._screen.blit(eyebrow, (18, 13))
+        title = self._test_title_font.render("CONSULTATION REVIEW", True, UI_WHITE)
+        self._screen.blit(title, (18, 33))
+        metrics = self._status_font.render(
+            f"TIME {format_duration(self.metrics.elapsed_seconds)}    TESTS DISCOVERED {len(self.metrics.discovered_tests)} / {self._available_test_count}",
+            True, UI_MINT,
+        )
+        self._screen.blit(metrics, (18, 64))
+        lines: list[tuple[str, pygame.font.Font, tuple[int, int, int]]] = []
+
+        def append(text: str, *, heading: bool = False, compact: bool = False) -> None:
+            font = self._status_font if heading else self._text_font
+            color = UI_TEAL if heading else UI_INK
+            for line in wrap_text(text, font, 420):
+                lines.append((line, font, color))
+            if not compact:
+                lines.append(("", font, color))
+
+        append("VISIT SCORES", heading=True)
+        append(
+            f"Tests discovered: {len(self.metrics.discovered_tests)}/{self._available_test_count}",
+            heading=True, compact=True,
+        )
+        scores = {axis.key: axis for axis in self._scorecard.axes} if self._scorecard else {}
+        for key, label in SCORE_AXES.items():
+            if key == "diagnostic_reasoning":
+                label = "Clinical knowledge"
+            axis = scores.get(key)
+            if self._review_loading:
+                value = "Pending"
+            elif self._review_error or axis is None:
+                value = "Unavailable"
+            elif axis.score is None:
+                value = "0/100"
+            else:
+                value = f"{axis.score * 20}/100"
+            append(f"{label}: {value}", heading=True, compact=True)
+        append("")
+
+        if self._review_loading:
+            append("Scoring consultation...", heading=True)
+        elif self._review_error:
+            append("SCORING UNAVAILABLE", heading=True)
+            append(self._review_error)
+        elif self._scorecard is not None:
+            append(self._scorecard.summary)
+            for axis in self._scorecard.axes:
+                score = "0/100 (insufficient evidence)" if axis.score is None else f"{axis.score * 20}/100"
+                append(f"{SCORE_AXES[axis.key]}: {score}", heading=True)
+                append(axis.feedback)
+        append("TESTS DISCOVERED", heading=True)
+        for name in self.metrics.discovered_tests:
+            append(name)
+        if not self.metrics.discovered_tests:
+            append("No tests discovered.")
+        append("PRESCRIPTIONS", heading=True)
+        for prescription in self.metrics.care_plan.prescriptions:
+            append(prescription.message())
+        if not self.metrics.care_plan.prescriptions:
+            append("No prescriptions recorded.")
+        append("REFERRALS", heading=True)
+        for referral in self.metrics.care_plan.referrals:
+            append(referral.message())
+        if not self.metrics.care_plan.referrals:
+            append("No referrals recorded.")
+        append("AI-generated game feedback", heading=True)
+        area = pygame.Rect(18, 104, 430, 302)
+        self._review_max_scroll = max(0, len(lines) * 21 - area.height)
+        self._review_scroll = min(self._review_scroll, self._review_max_scroll)
+        previous_clip = self._screen.get_clip()
+        self._screen.set_clip(area)
+        for index, (line, font, color) in enumerate(lines):
+            self._screen.blit(font.render(line, True, color), (area.x, area.y + index * 21 - self._review_scroll))
+        self._screen.set_clip(previous_clip)
+        if self._review_max_scroll:
+            pygame.draw.rect(self._screen, UI_MUTED, (459, 104, 3, 302))
+            offset = round(262 * self._review_scroll / self._review_max_scroll)
+            pygame.draw.rect(self._screen, UI_TEAL, (459, 104 + offset, 3, 40))
+        pygame.draw.rect(self._screen, UI_PANEL, (0, 416, 480, 64))
+        if self._review_error and not self._review_loading:
+            pygame.draw.rect(self._screen, UI_CORAL, self._review_retry_button, border_radius=5)
+            retry = self._text_font.render("Retry", True, UI_WHITE)
+            self._screen.blit(retry, retry.get_rect(center=self._review_retry_button.center))
+        button_color = UI_MUTED if self._review_loading else UI_TEAL
+        pygame.draw.rect(self._screen, button_color, self._review_return_button, border_radius=5)
+        button_text = "Scoring..." if self._review_loading else "Return to Hospital"
+        label = self._text_font.render(button_text, True, UI_WHITE)
+        self._screen.blit(label, label.get_rect(center=self._review_return_button.center))
+
+    def _handle_review_event(self, event: pygame.event.Event, stop: asyncio.Event) -> None:
+        key = event.key if event.type == pygame.KEYDOWN else None
+        clicked = event.type == pygame.MOUSEBUTTONUP and event.button == 1
+        position = self._screen_position(event.pos) if clicked else (-1, -1)
+        if key in (pygame.K_ESCAPE, pygame.K_RETURN, pygame.K_KP_ENTER) or (clicked and self._review_return_button.collidepoint(position)):
+            if not self._review_loading:
+                stop.set()
+        elif self._review_error and not self._review_loading and (key == pygame.K_F5 or (clicked and self._review_retry_button.collidepoint(position))):
+            self._review_loading = True
+            self._review_retry.set()
+        elif event.type == pygame.MOUSEWHEEL:
+            self._review_scroll = max(0, min(self._review_max_scroll, self._review_scroll - event.y * 42))
+        elif key in (pygame.K_DOWN, pygame.K_UP, pygame.K_PAGEDOWN, pygame.K_PAGEUP):
+            delta = 126 if key in (pygame.K_DOWN, pygame.K_PAGEDOWN) else -126
+            self._review_scroll = max(0, min(self._review_max_scroll, self._review_scroll + delta))
+
     def draw(self, animation_time: float = 0.0) -> None:
+        if self._review_open:
+            self._draw_review()
+            pygame.transform.scale(self._screen, self._window.get_size(), self._window)
+            pygame.display.flip()
+            return
         state = self._current_state()
         patient_frame = self._centered_frame(state, animation_time)
         player_frame = self._player_frame(animation_time)
@@ -1182,8 +1472,12 @@ class PatientAnimator:
         self._draw_header(state)
         self._draw_transcript()
         self._draw_console(state)
+        if self._care_form is not None and not self.won:
+            self._care_form.draw(self._screen)
         if self._test_result and not self.won:
             self._draw_evidence()
+        if self._diagnosis_open and not self.won:
+            self._draw_diagnosis()
         if self.won:
             self._draw_win()
         self._draw_scene_fade()
@@ -1202,9 +1496,16 @@ class PatientAnimator:
             return
         if event.type == pygame.WINDOWFOCUSLOST:
             self._set_text_focus(False)
+            if self._care_form is not None:
+                self._care_form.focus(-1)
+            if self._diagnosis_open:
+                self._focus_diagnosis(-1)
             return
         if event.type == pygame.KEYUP and event.key in (pygame.K_LSHIFT, pygame.K_RSHIFT):
             self._push_to_talk.clear()
+            return
+        if self._review_open:
+            self._handle_review_event(event, stop)
             return
         if self.won:
             return
@@ -1226,11 +1527,33 @@ class PatientAnimator:
             if key == pygame.K_ESCAPE and "Keep Consulting" in self._menu.choices:
                 choice = "Keep Consulting"
             if choice == "Keep Consulting":
+                if self._menu.title == "CARE PLAN":
+                    self._set_text_focus(self._care_chat_was_focused)
                 self._menu = None
+            elif choice == "Finish Visit":
+                self._menu = None
+                self._finish_consultation()
+            elif choice in ("Add Prescription", "Add Referral"):
+                self._menu = None
+                self._care_form = CareOrderForm("prescription" if choice == "Add Prescription" else "referral")
+            elif choice == "Review Orders":
+                self._menu = None
+                self.show_test_result(Test("Care plan", self.metrics.care_plan.summary()))
             elif choice in ("Return to Hospital", "Retry"):
                 self.retry_requested = choice == "Retry"
                 self._running = False
                 stop.set()
+            return
+        if self._care_form is not None:
+            order = self._care_form.handle_event(event, self._window.get_size())
+            if order is not None:
+                self._record_care_order(order)
+            if self._care_form.closed:
+                self._care_form = None
+                self._set_text_focus(self._care_chat_was_focused)
+            return
+        if self._diagnosis_open:
+            self._handle_diagnosis_event(event)
             return
         if key == pygame.K_ESCAPE:
             if self._text_focused:
@@ -1241,7 +1564,13 @@ class PatientAnimator:
             return
         if not self._ready:
             return
-        if event.type == pygame.MOUSEWHEEL:
+        if key == pygame.K_F2:
+            self._open_diagnosis()
+        elif key == pygame.K_F3:
+            self._show_discovered_tests()
+        elif key == pygame.K_F4:
+            self._open_care_menu()
+        elif event.type == pygame.MOUSEWHEEL:
             self._transcript_scroll = max(0, self._transcript_scroll + event.y * 2)
         elif key in (pygame.K_PAGEUP, pygame.K_PAGEDOWN):
             self._transcript_scroll = max(0, self._transcript_scroll + (4 if key == pygame.K_PAGEUP else -4))
@@ -1258,6 +1587,12 @@ class PatientAnimator:
             position = self._screen_position(event.pos)
             if self._text_input_rect.collidepoint(position):
                 self._set_text_focus(True)
+            elif self._diagnose_button.collidepoint(position):
+                self._open_diagnosis()
+            elif self._care_button.collidepoint(position):
+                self._open_care_menu()
+            elif self._discovered_tests_button.collidepoint(position):
+                self._show_discovered_tests()
             elif self._text_send_button.collidepoint(position):
                 self._submit_text()
             else:
@@ -1279,6 +1614,25 @@ class PatientAnimator:
             pygame.quit()
 
 
+@asynccontextmanager
+async def _realtime_authorization() -> AsyncIterator[dict[str, str]]:
+    global _cached_realtime_token
+    token = _cached_realtime_token
+    if token is None or token.expires_on <= time.time() + AZURE_TOKEN_REFRESH_MARGIN_SECONDS:
+        credential = AzureCliCredential(process_timeout=AZURE_CLI_TIMEOUT_SECONDS)
+        try:
+            token = await credential.get_token(AZURE_OPENAI_SCOPE)
+        finally:
+            await credential.close()
+        _cached_realtime_token = token
+    try:
+        yield {"Authorization": f"Bearer {token.token}"}
+    except (InvalidStatus, httpx.HTTPStatusError) as error:
+        if error.response.status_code == 401 and _cached_realtime_token is token:
+            _cached_realtime_token = None
+        raise
+
+
 async def _conversation_session(
     system_prompt: str,
     disease: str,
@@ -1287,12 +1641,8 @@ async def _conversation_session(
     animator: PatientAnimator,
     stop: asyncio.Event,
 ) -> bool:
-    credential = AzureCliCredential(process_timeout=15)
     test_tools, tests_by_tool = _test_tools(tests)
-    try:
-        token = await credential.get_token(AZURE_OPENAI_SCOPE)
-        headers = {"Authorization": f"Bearer {token.token}"}
-
+    async with _realtime_authorization() as headers:
         async with _realtime_connection(headers) as websocket:
             await websocket.send(
                 json.dumps(
@@ -1304,22 +1654,7 @@ async def _conversation_session(
                                 system_prompt, disease
                             ),
                             "output_modalities": ["audio"],
-                            "tools": [
-                                {
-                                    "type": "function",
-                                    "name": "win",
-                                    "description": (
-                                        "Declare that the clinician correctly diagnosed "
-                                        "the patient. Call only for the correct diagnosis."
-                                    ),
-                                    "parameters": {
-                                        "type": "object",
-                                        "properties": {},
-                                        "additionalProperties": False,
-                                    },
-                                },
-                                *test_tools,
-                            ],
+                            "tools": test_tools,
                             "tool_choice": "auto",
                             "audio": {
                                 "input": {
@@ -1397,6 +1732,7 @@ async def _conversation_session(
             ):
                 animator.set_microphone_available(input_stream is not None)
                 animator._ready = True
+                animator.metrics.start()
                 print(
                     "Conversation started. Diagnose the patient or press Ctrl+C."
                     if input_stream is not None
@@ -1425,7 +1761,7 @@ async def _conversation_session(
                 async def send_text_messages() -> None:
                     while not stop.is_set():
                         message = await animator.next_text_message()
-                        if animator.won or animator.evidence_open or animator._menu is not None:
+                        if animator.won:
                             continue
                         print(f"\nYou: {message}")
                         if assistant_speaking.is_set():
@@ -1456,11 +1792,21 @@ async def _conversation_session(
                         animator._sending = False
                         animator._sent_until = time.monotonic() + 1.2
 
+                async def finish_diagnosis() -> None:
+                    await animator._consultation_finished.wait()
+                    cancelled_response.set()
+                    assistant_speaking.clear()
+                    animator.set_talking(False)
+                    output_stream.abort()
+                    await asyncio.sleep(RELIEVED_DURATION_SECONDS)
+                    stop.set()
+
                 async def receive_events() -> None:
-                    win_reported = False
                     async for raw_message in websocket:
                         event = json.loads(raw_message)
                         event_type = event.get("type")
+                        if animator.won and event_type != "conversation.item.input_audio_transcription.completed":
+                            continue
 
                         if event_type == "response.output_audio.delta":
                             if cancelled_response.is_set():
@@ -1489,32 +1835,10 @@ async def _conversation_session(
                                 animator.add_transcript("Patient", event.get("transcript", ""), event.get("item_id") or event.get("response_id"))
                         elif (
                             event_type == "response.function_call_arguments.done"
-                            and event.get("name") == "win"
-                            and not win_reported
-                        ):
-                            win_reported = True
-                            animator.show_win()
-                            print("\nYOU WIN")
-                            await websocket.send(
-                                json.dumps(
-                                    {
-                                        "type": "conversation.item.create",
-                                        "item": {
-                                            "type": "function_call_output",
-                                            "call_id": event["call_id"],
-                                            "output": json.dumps({"won": True}),
-                                        },
-                                    }
-                                )
-                            )
-                            await asyncio.sleep(RELIEVED_DURATION_SECONDS)
-                            stop.set()
-                            return
-                        elif (
-                            event_type == "response.function_call_arguments.done"
                             and event.get("name") in tests_by_tool
                         ):
                             test = tests_by_tool[event["name"]]
+                            animator.metrics.discover_test(test.description, test.results)
                             animator.show_test_result(test)
                             print(f"\n{test.description}: {test.results}")
                             await websocket.send(
@@ -1555,8 +1879,9 @@ async def _conversation_session(
 
                 text_sender = asyncio.create_task(send_text_messages())
                 receiver = asyncio.create_task(receive_events())
+                diagnosis = asyncio.create_task(finish_diagnosis())
                 stopped = asyncio.create_task(stop.wait())
-                tasks = {text_sender, receiver, stopped}
+                tasks = {text_sender, receiver, diagnosis, stopped}
                 if input_stream is not None:
                     tasks.add(asyncio.create_task(send_microphone_audio()))
                 try:
@@ -1569,8 +1894,55 @@ async def _conversation_session(
                     output_stream.abort()
                     await asyncio.gather(*tasks, return_exceptions=True)
                 return animator.won
+
+
+async def _show_consultation_review(
+    animator: PatientAnimator,
+    system_prompt: str,
+    disease: str,
+    tests: Sequence[Test],
+) -> None:
+    animator._review_open = True
+    animator._review_loading = True
+    animator._review_error = ""
+    animator._available_test_count = len({test.description for test in tests})
+    animator._running = True
+    review_stop = asyncio.Event()
+
+    async def request_scorecard() -> ConsultationScorecard:
+        async with _realtime_authorization() as headers:
+            return await score_consultation(
+                tuple(animator._transcript), disease, system_prompt,
+                animator.metrics, animator._available_test_count, headers,
+            )
+
+    async def generate_reviews() -> None:
+        while not review_stop.is_set():
+            animator._review_loading = True
+            animator._review_error = ""
+            try:
+                animator._scorecard = await asyncio.wait_for(request_scorecard(), REVIEW_TIMEOUT_SECONDS)
+            except httpx.HTTPStatusError as error:
+                animator._review_error = f"Scoring service returned HTTP {error.response.status_code}. Retry scoring or return to the hospital. Your diagnosis remains confirmed."
+            except (AzureError, httpx.RequestError, TimeoutError, asyncio.TimeoutError, ValueError):
+                animator._review_error = "Scoring could not be completed. Retry scoring or return to the hospital. Your diagnosis remains confirmed."
+            animator._review_loading = False
+            animator._review_scroll = 0
+            await animator._review_retry.wait()
+            animator._review_retry.clear()
+
+    animation = asyncio.create_task(animator.run(review_stop))
+    scoring = asyncio.create_task(generate_reviews())
+    try:
+        done, pending = await asyncio.wait({animation, scoring}, return_when=asyncio.FIRST_COMPLETED)
+        for task in done:
+            task.result()
     finally:
-        await credential.close()
+        review_stop.set()
+        for task in (animation, scoring):
+            task.cancel()
+        await asyncio.gather(animation, scoring, return_exceptions=True)
+        animator._review_open = False
 
 
 async def _run_conversation(
@@ -1583,7 +1955,7 @@ async def _run_conversation(
     screen: pygame.Surface | None = None,
 ) -> ConversationResult:
     while True:
-        animator = PatientAnimator(patient_index, window=window, screen=screen)
+        animator = PatientAnimator(patient_index, window=window, screen=screen, disease=disease)
         animator._ready = False
         stop = asyncio.Event()
         animation = asyncio.create_task(animator.run(stop))
@@ -1601,10 +1973,16 @@ async def _run_conversation(
                         await animation
             if animation in done:
                 animation.result()
+            if animator.won:
+                stop.set()
+                for task in (session, animation):
+                    task.cancel()
+                await asyncio.gather(session, animation, return_exceptions=True)
+                if not animator.quit_requested:
+                    await _show_consultation_review(animator, system_prompt, disease, tests)
+                return ConversationResult.SOLVED_QUIT if animator.quit_requested else ConversationResult.SOLVED
             if animator.quit_requested:
                 return ConversationResult.QUIT
-            if animator.won:
-                return ConversationResult.SOLVED
             if not animator.retry_requested:
                 return ConversationResult.RETURNED
         finally:
@@ -1651,7 +2029,7 @@ def strat_conversation(
     screen: pygame.Surface | None = None,
 ) -> bool:
     """Start a patient conversation with diagnostic tools and result popups."""
-    return start_consultation(system_prompts, disease, patient_type, tests, window=window, screen=screen) == ConversationResult.SOLVED
+    return start_consultation(system_prompts, disease, patient_type, tests, window=window, screen=screen) in (ConversationResult.SOLVED, ConversationResult.SOLVED_QUIT)
 
 
 if __name__ == "__main__":
