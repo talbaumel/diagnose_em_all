@@ -7,7 +7,11 @@ from contextlib import asynccontextmanager, contextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pygame
+from azure.core.credentials import AccessToken
+from websockets.exceptions import InvalidStatus
+from websockets.http11 import Response
 
+from src.azure_auth import AzureSignInRequired
 from src.game_ui import wrap_text
 from src.care_plan import Prescription, Referral
 from src.consultation_review import AxisScore, ConsultationScorecard, SCORE_AXES
@@ -329,6 +333,44 @@ class ConversationUITests(unittest.TestCase):
         self.animator._submit_text()
         self.assertTrue(self.animator._text_messages.empty())
 
+    def test_sign_in_button_requests_authenticated_retry(self):
+        self.animator.show_sign_in("Sign in to continue.")
+        self.key(pygame.K_RETURN)
+        self.assertTrue(self.animator.sign_in_requested)
+        self.assertTrue(self.animator.retry_requested)
+        self.assertTrue(self.stop.is_set())
+
+    def test_pending_sign_in_blocks_input_and_can_return(self):
+        self.animator.show_sign_in("Continue in your browser.", pending=True)
+        self.key(pygame.K_LSHIFT)
+        self.animator._text_input = "hidden"
+        self.animator._submit_text()
+        self.assertFalse(self.animator.push_to_talk)
+        self.assertTrue(self.animator._text_messages.empty())
+        self.key(pygame.K_RETURN)
+        self.assertTrue(self.stop.is_set())
+        self.assertFalse(self.animator.retry_requested)
+
+    def test_sign_in_menu_supports_mouse_at_window_scale(self):
+        self.animator.show_sign_in("Sign in to continue.")
+        self.animator.handle_event(
+            pygame.event.Event(pygame.MOUSEBUTTONUP, button=1, pos=(360, 373)),
+            self.stop,
+        )
+        self.assertTrue(self.animator.sign_in_requested)
+
+    def test_sign_in_details_fit_above_buttons(self):
+        for detail in (
+            "Sign in with a Microsoft work or school account that has access to this Azure resource.",
+            "Finish Microsoft sign-in in your browser. This consultation will continue automatically.",
+            "Azure denied access. Sign in with an authorized account, or ask the resource owner for access.",
+        ):
+            self.animator.show_sign_in(detail)
+            menu = self.animator._menu
+            lines = wrap_text(detail, menu._small_font, 300)
+            self.assertLessEqual(174 + len(lines) * 17, menu._buttons[0].top)
+            self.animator.draw()
+
     def test_speaking_status_takes_priority_over_focused_input(self):
         self.animator.set_microphone_available(False)
         self.assertEqual(self.animator._status("idle")[0], "TEXT MODE")
@@ -389,6 +431,9 @@ class ConversationUITests(unittest.TestCase):
 
 class LifecycleTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
+        cache = patch("src.realtime_conversation._cached_realtime_token", None)
+        cache.start()
+        self.addCleanup(cache.stop)
         pygame.init()
         self.window = pygame.display.set_mode((720, 720))
 
@@ -398,7 +443,7 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
     async def test_completed_consultation_opens_review_after_session_cleanup(self):
         session_closed = asyncio.Event()
 
-        async def session(prompt, disease, index, tests, animator, stop):
+        async def session(prompt, disease, index, tests, animator, stop, *, sign_in=False):
             try:
                 animator.show_win()
                 stop.set()
@@ -584,7 +629,7 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
         started = asyncio.Event()
         cancelled = asyncio.Event()
 
-        async def connection(*args):
+        async def connection(*args, **kwargs):
             started.set()
             try:
                 await asyncio.Event().wait()
@@ -605,12 +650,117 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
         async def animation(animator, stop):
             while animator._menu is None:
                 await asyncio.sleep(0)
+            self.assertEqual(animator._menu.choices, ("Retry", "Return to Hospital"))
             animator._running = False
             stop.set()
 
         with patch("src.realtime_conversation._conversation_session", new=AsyncMock(side_effect=ConnectionError("offline"))), patch.object(PatientAnimator, "run", animation):
             result = await _run_conversation("prompt", "test", 0, [], window=self.window)
         self.assertEqual(result, ConversationResult.RETURNED)
+
+    async def test_authentication_error_offers_sign_in_and_reconnects(self):
+        attempts = []
+
+        async def connection(prompt, disease, index, tests, animator, stop, *, sign_in=False):
+            attempts.append(sign_in)
+            if not sign_in:
+                raise AzureSignInRequired("Sign in to continue.")
+            animator._won = True
+
+        async def animation(animator, stop):
+            while animator._menu is None and not stop.is_set():
+                await asyncio.sleep(0)
+            if not stop.is_set():
+                self.assertEqual(animator._menu.choices[0], "Sign in to Azure")
+                animator.handle_event(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_RETURN), stop)
+
+        with patch("src.realtime_conversation._conversation_session", side_effect=connection), patch.object(PatientAnimator, "run", animation), patch("src.realtime_conversation._show_consultation_review", new=AsyncMock()):
+            result = await _run_conversation("prompt", "test", 0, [], window=self.window)
+        self.assertEqual(result, ConversationResult.SOLVED)
+        self.assertEqual(attempts, [False, True])
+
+    async def test_azure_access_denied_offers_account_sign_in(self):
+        from websockets.datastructures import Headers
+
+        async def animation(animator, stop):
+            while animator._menu is None:
+                await asyncio.sleep(0)
+            self.assertEqual(animator._menu.choices, ("Sign in to Azure", "Return to Hospital"))
+            stop.set()
+
+        for status in (401, 403):
+            error = InvalidStatus(Response(status, "Denied", Headers()))
+            with self.subTest(status=status), patch(
+                "src.realtime_conversation._conversation_session", new=AsyncMock(side_effect=error)
+            ), patch.object(PatientAnimator, "run", animation):
+                result = await _run_conversation("prompt", "test", 0, [], window=self.window)
+            self.assertEqual(result, ConversationResult.RETURNED)
+
+    async def test_browser_success_resumes_connection_and_clears_prompt(self):
+        from src.realtime_conversation import _conversation_session
+
+        animator = PatientAnimator(0, window=self.window)
+        credential = AsyncMock()
+
+        async def get_token(scope):
+            self.assertEqual(animator._menu.title, "SIGNING IN TO AZURE")
+            return AccessToken("test-token", 9999999999)
+
+        def connect(headers):
+            self.assertIsNone(animator._menu)
+            self.assertEqual(headers, {"Authorization": "Bearer test-token"})
+            raise ConnectionError("stop before real connection")
+
+        credential.get_token.side_effect = get_token
+        try:
+            with patch("src.realtime_conversation.GameCredential", return_value=credential) as factory, patch(
+                "src.realtime_conversation._realtime_connection", side_effect=connect
+            ):
+                with self.assertRaises(ConnectionError):
+                    await _conversation_session("prompt", "test", 0, [], animator, asyncio.Event(), sign_in=True)
+            factory.assert_called_once_with(sign_in=True)
+            credential.close.assert_awaited_once()
+        finally:
+            animator.close()
+
+    async def test_return_or_quit_during_browser_sign_in_cancels_authentication(self):
+        for quit_game in (False, True):
+            cancelled = asyncio.Event()
+            credentials = []
+
+            def factory(*, sign_in):
+                credential = AsyncMock()
+                credentials.append(credential)
+
+                async def get_token(scope):
+                    if not sign_in:
+                        raise AzureSignInRequired("Sign in to continue.")
+                    try:
+                        await asyncio.Event().wait()
+                    finally:
+                        cancelled.set()
+
+                credential.get_token.side_effect = get_token
+                return credential
+
+            async def animation(animator, stop):
+                while animator._menu is None:
+                    await asyncio.sleep(0)
+                if animator._menu.title == "SIGNING IN TO AZURE" and quit_game:
+                    event = pygame.event.Event(pygame.QUIT)
+                else:
+                    event = pygame.event.Event(pygame.KEYDOWN, key=pygame.K_RETURN)
+                animator.handle_event(event, stop)
+
+            with self.subTest(quit_game=quit_game), patch(
+                "src.realtime_conversation.GameCredential", side_effect=factory
+            ), patch.object(PatientAnimator, "run", animation):
+                result = await _run_conversation("prompt", "test", 0, [], window=self.window)
+            self.assertEqual(result, ConversationResult.QUIT if quit_game else ConversationResult.RETURNED)
+            self.assertTrue(cancelled.is_set())
+            self.assertEqual(len(credentials), 2)
+            for credential in credentials:
+                credential.close.assert_awaited_once()
 
     async def test_programming_errors_are_not_hidden(self):
         with patch("src.realtime_conversation._conversation_session", new=AsyncMock(side_effect=TypeError("bug"))):

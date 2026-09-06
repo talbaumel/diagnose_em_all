@@ -22,7 +22,7 @@ class RealtimeAuthorizationTests(unittest.TestCase):
         self.addCleanup(clock.stop)
         self.credential = Mock(get_token=AsyncMock(), close=AsyncMock())
         self.credential.get_token.return_value = AccessToken("test-token", 4600)
-        factory = patch.object(conversation, "AzureCliCredential", return_value=self.credential)
+        factory = patch.object(conversation, "GameCredential", return_value=self.credential)
         self.factory = factory.start()
         self.addCleanup(factory.stop)
 
@@ -35,7 +35,7 @@ class RealtimeAuthorizationTests(unittest.TestCase):
         second = asyncio.run(self.authorize())
         self.assertEqual(first, second)
         self.assertEqual(second, {"Authorization": "Bearer test-token"})
-        self.factory.assert_called_once_with(process_timeout=60)
+        self.factory.assert_called_once_with(sign_in=False)
         self.credential.get_token.assert_awaited_once_with(conversation.AZURE_OPENAI_SCOPE)
         self.credential.close.assert_awaited_once()
 
