@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "cues": {
+    "cold_dry_cough": {
+      "kind": "cough",
+      "file": "assets/audio/coughvid/dry_01_short.wav",
+      "sha256": "439bf9ef023a6b9c271539f73e90ea7136cb0a3896c9fc14c961416ee58b25aa",
+      "caption": "[coughs]",
+      "contexts": ["internal_pause", "requested"],
+      "gain_db": 0,
+      "status": "gameplay_trial",
+      "provenance": "assets/audio/coughvid/SOURCES.json",
+      "license": "CC-BY-4.0",
+      "review": "Existing illustrative game cough, retained for the user-approved common-cold gameplay trial. Not clinically validated or verified child audio."
+    },
+    "cold_short_sniffle": {
+      "kind": "sniffle",
+      "file": "assets/audio/cue_candidates/prepared/sniffle_02.wav",
+      "sha256": "f3ac4b3eff517267edbc14f177fa37342c57d2d6cebb6a402978cb7e3cb17e37",
+      "caption": "[sniffles]",
+      "contexts": ["internal_pause", "requested"],
+      "gain_db": 0,
+      "status": "gameplay_trial",
+      "provenance": "assets/audio/cue_candidates/SOURCES.json",
+      "license": "CC0-1.0; FSD50K dataset CC-BY-4.0",
+      "review": "Short internal sniffle preview accepted as part of the user-approved first gameplay plan. Historical candidate metadata remains unchanged; this catalog records trial promotion, not medical or release approval."
+    },
+    "cold_sneeze": {
+      "kind": "sneeze",
+      "file": "assets/audio/cue_candidates/prepared/sneeze_02.wav",
+      "sha256": "e85d57b180d17c7ffb787f1e1d477170dc201b68914f6d7c244278b5d87f1f8d",
+      "caption": "[sneezes]",
+      "contexts": ["internal_pause", "requested"],
+      "gain_db": 0,
+      "status": "gameplay_trial",
+      "provenance": "assets/audio/cue_candidates/SOURCES.json",
+      "license": "CC0-1.0; FSD50K dataset CC-BY-4.0",
+      "review": "Shorter non-clipped sneeze candidate promoted following the user's request to integrate sneezes. Gameplay trial only; no clinical or release approval inferred."
+    },
+    "cold_throat_clear": {
+      "kind": "throat_clear",
+      "file": "assets/audio/cue_candidates/prepared/throat_clear_01.wav",
+      "sha256": "2a5302de10090343335ba15fa0dbe7affcdec698e38865fb80c86cd8d89ed234",
+      "caption": "[clears throat]",
+      "contexts": ["internal_pause", "requested"],
+      "gain_db": 0,
+      "status": "gameplay_trial",
+      "provenance": "assets/audio/cue_candidates/SOURCES.json",
+      "license": "CC0-1.0; FSD50K dataset CC-BY-4.0",
+      "review": "Prepared throat-clear promoted following the user's request to integrate throat-clearing. Same source contributor as the sniffle; character identity and clinical appropriateness are not established."
+    }
+  }
+}

@@ -1,10 +1,12 @@
 # Diagnose Em' All
 
-A voice-driven diagnostic game powered by the Azure OpenAI Realtime API. Play as the clinician, interview an animated patient, request diagnostic tests, and identify the correct disease.
+A voice-driven diagnostic game powered by Azure OpenAI Realtime. Play as the
+clinician, interview animated patients, request tests, and identify each disease.
 
 ## Requirements
 
-- [uv](https://docs.astral.sh/uv/getting-started/installation/) (manages Python 3.10 or newer and project dependencies)
+- [uv](https://docs.astral.sh/uv/getting-started/installation/) for Python and project dependencies.
+- Python 3.11 or newer for the audio runtime. Development is tested on Python 3.13/macOS.
 - An Azure account with access to the configured Azure OpenAI Realtime deployment
 - A Microsoft work or school account with access to the Azure OpenAI resource
 - A working audio output device; microphone optional (typing is supported)
@@ -45,7 +47,8 @@ Then sync the project from the repository root:
 
 ```bash
 keyring --list-backends
-uv sync --locked
+uv sync --locked --python 3.13
+uv pip install -r requirements-voice.txt
 ```
 
 uv creates and manages `.venv` automatically and downloads Python if needed.
@@ -56,14 +59,20 @@ Use `uv add <package>` or `uv remove <package>` to change dependencies; use
 `uv lock --upgrade` followed by `uv sync` to update locked versions.
 Commit both `pyproject.toml` and `uv.lock` when dependencies change.
 
-When a consultation needs authentication, select **Sign in to Azure** in the
-game. Complete Microsoft sign-in in the browser; the consultation continues
-automatically. Azure CLI is not required for this flow.
+The common-cold kid enables the optional voice filter, so install
+`requirements-voice.txt` for the default campaign. Reinstall it after an exact
+`uv sync`, which removes packages outside the project lockfile. Without voice
+dependencies, set `performance_profile.voice.enabled` to `false` in
+[the kid's JSON](data/prompts/01_common_cold_kid.json), or run another persona.
+The pinned PyWORLD/setuptools combination may emit an upstream
+`pkg_resources` deprecation warning.
 
-Alternatively, if you have Azure CLI installed, authenticate before launching:
+Select **Sign in to Azure** when prompted and complete browser sign-in with an
+authorized Microsoft work or school account. Azure CLI is not required.
+Alternatively:
 
 ```bash
-az login
+az login --scope https://cognitiveservices.azure.com/.default
 ```
 
 The game reuses a valid Azure access token in memory between patient visits.
@@ -91,42 +100,36 @@ should use their own registered Microsoft Entra application.
 
 ## Run
 
-Start the hospital with every patient from `data/prompts`:
-
 ```bash
 uv run python -m src.debug_example
 ```
 
-Pass one or more prompt files to limit the hospital roster:
+Limit the roster by passing one or more prompt files:
 
 ```bash
-uv run python -m src.debug_example data/prompts/11_eccentric_neighbor.json
+uv run python -m src.debug_example data/prompts/01_common_cold_kid.json
 ```
 
-## Game Loop
+VS Code includes **Start Diagnose 'Em All** and **Test Common Cold Kid** tasks.
+Different rosters have independent progress; testing the kid alone does not
+reset the full campaign.
 
-- Move Dr. Ash through the hospital with the arrow keys or WASD.
+## Controls and game loop
+
+- Move with arrow keys or WASD; press Enter near a highlighted patient.
 - Enter Pediatrics and the Diagnostics Lab through their corridor doors.
-- Approach a patient and press Enter when the patient is highlighted.
-- Interview the patient in the diagnosis battle and request configured tests.
-- Submit the correct diagnosis, discuss the care plan, then choose Finish Visit to complete the case.
-- Help patient 01 to unlock the Patient Ward.
-- Help patient 02 to unlock the Pharmacy Lounge.
-- Return to the same hospital position and find the next patient.
-- Press Escape or click the pause icon for Resume, New Game, and Save & Quit.
-- Closing every case in the current roster completes the hospital rounds.
+- Hold either Shift key to speak. Click the text field and press Enter to type.
+- Interview the patient, request diagnostic tests, and state your diagnosis.
+- Submit the correct diagnosis, discuss the care plan, then choose Finish Visit.
+- Scroll transcripts with the wheel or Page Up / Page Down.
+- Close evidence using Enter, Escape or its close button.
+- Escape leaves text focus first, otherwise opening the consultation exit prompt.
+- In the hospital, Escape or the pause button opens Resume, New Game and Save & Quit.
+- Solving cases unlocks additional rooms; clearing the roster completes the rounds.
 
-During a diagnosis battle:
-
-- Hold either Shift key to speak.
 - Dr. Ash switches from idle to talking animation while push-to-talk is active.
-- Click the text field to type, then press Enter or click Send.
 - Patient speech and your responses appear in the conversation transcript.
-- Scroll the transcript with the mouse wheel or Page Up / Page Down.
-- Ask the patient to perform one of the configured diagnostic tests.
 - Scroll long evidence reports with the wheel, arrow keys, or Page Up / Page Down.
-- Close evidence with Enter, Escape, or its close button.
-- Escape leaves text focus first; otherwise it opens a return-to-hospital confirmation.
 - Click Diagnose or press F2 to open the final diagnosis dialog.
 - Enter a diagnosis and click Submit Diagnosis or press Enter to commit it.
 - Tab / Shift+Tab moves between the diagnosis field, Cancel, and Submit Diagnosis.
@@ -137,6 +140,10 @@ During a diagnosis battle:
 - Click Care Plan or press F4 to add prescriptions, add referrals, or review recorded orders.
 - Click the Dragon Copilot logo-and-text button to ask for help during the visit. F6 also opens it; Escape, F6, or Return to Patient closes the helper.
 - After confirming a diagnosis, the Diagnose button becomes Finish Visit (also F2). Confirm to end the call and open the scorecard.
+
+The hospital pauses when unfocused; a consultation does not. Losing focus
+releases push-to-talk. Returning to the hospital cancels the unfinished case.
+Retry starts a new conversation, not recovery of the previous session.
 
 Chat input and transcripts support Russian and Hebrew, including right-to-left
 Hebrew text mixed with English and numbers. Chat uses bundled DejaVu Sans fonts
@@ -215,11 +222,21 @@ you may finish a visit without prescribing or referring when appropriate. Finish
 waits for pending outgoing messages to be sent. Order records and the transcript are
 included in the final review but are not stored in local saves.
 
-The hospital pauses when the window loses focus. A live consultation is not
-paused: losing focus releases push-to-talk, while returning to the hospital
-cancels the unfinished case. Authentication failures offer Sign in to Azure or
-Return to Hospital; other connection failures offer Retry or Return to Hospital.
-Retrying starts a new consultation, not a recovered conversation.
+## Patient audio
+
+The common-cold kid automatically uses the selected voice filter and inserts
+coughs, sniffles, sneezes or throat-clears at suitable internal pauses. **No sound
+requests are needed.** Every ordinary reply is an opportunity after the shared
+20-second cooldown, with at most one cue per clinician turn. No safe gap means
+no spontaneous cue. Shift or a typed message interrupts speech and cues.
+
+Captions display complete speech segments at playback onset, with separate
+audible cue indicators. They are not word-aligned. Speech processing adds
+latency; it is not a clinically validated simulation.
+
+For device failures, select a working system output and retry. If macOS changed
+devices, restarting the game may help. Authentication, connection and audio
+failures have distinct in-game recovery messages.
 
 ## Consultation Review
 
@@ -263,28 +280,38 @@ Scoring has a 120-second overall deadline and does not automatically retry paid
 requests. A finished visit remains complete if scoring fails or is cancelled.
 Closing the review window saves the completed case before exiting the hospital.
 
-## Saved Progress
+## Patient configuration
 
-Completed cases and your hospital position save before consultations, after
-finished visits, and when leaving the hospital. The active patient roster
-resumes automatically; different rosters have independent progress. New Game
-requires confirmation and resets only the current roster.
+Each file under [data/prompts/](data/prompts/) defines `system_prompts`, `disease`,
+`patient_type`, and a nonempty `tests` list. Test `results` may be text or an image
+path. Optional test `audio` accepts a nonempty mono 24 kHz PCM16 WAV of at most
+10 seconds; it plays through the same interruptible output queue.
 
-Save locations:
+The optional `performance_profile` independently configures delivery, voice
+processing, catalog-selected cues and scheduling. Only the common-cold kid is
+enabled by default.
+
+See **[NPC audio performance](docs/audio-performance.md)** for the JSON schema,
+runtime architecture, cue catalog, source licenses, offline auditions and limits.
+
+## Saved progress
+
+Completed cases and hospital position save before consultations, after finished
+visits, and on exit. The active patient roster resumes automatically; different
+rosters have independent progress. New Game resets only the current roster after
+confirmation.
 
 - macOS: `~/Library/Application Support/DiagnoseEmAll/progress.json`
 - Windows: `%LOCALAPPDATA%/DiagnoseEmAll/progress.json`
-- Linux: `$XDG_DATA_HOME/diagnose_em_all/progress.json`, or
+- Linux: `$XDG_DATA_HOME/diagnose_em_all/progress.json` or
   `~/.local/share/diagnose_em_all/progress.json`
 
-Saves contain only patient identifiers, completion flags, and coordinates, not
-conversation transcripts, prompts, audio, or credentials. Invalid restored
-positions fall back to the hospital entrance. Corrupt or unsupported saves are
-preserved and reported; explicitly starting a New Game backs up such a file
-to `progress.json.bak` before replacing it. An existing backup is never overwritten.
-Write failures keep the previous save and allow you to continue playing.
+Saves contain no conversation transcripts, audio or credentials. Corrupt or
+unsupported saves are preserved and reported. Starting New Game backs up such
+a file before replacement; an existing backup is never overwritten. Failed
+writes leave the previous save intact.
 
-## Offline Preview and Tests
+## Tests and developer tools
 
 Preview navigation without Azure or audio hardware (no progress is saved;
 selecting a patient exits this navigation-only preview):
@@ -308,6 +335,12 @@ Run the offline regression suite and syntax checks:
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy uv run python -m unittest discover -s tests -v
 uv run python -m compileall -q src tests tools
 ```
+
+The suite uses unittest, mocked services and controlled audio sinks; it does not
+authenticate to Azure or use microphone/speaker hardware. Processing tests use
+the installed optional voice libraries. Audio preparation tests also need
+`ffmpeg`; they report a skip when it is unavailable. Tests generate their own
+temporary listening fixtures, not files from a prior developer session.
 
 The tests exercise movement, camera timing, atlas validity and fallback, modal
 input, token reuse/expiry and authentication recovery, connection cancellation,
@@ -334,43 +367,45 @@ normal service usage:
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy uv run python -m tools.smoke_conversation --live
 ```
 
-Add `--speech path/to/speech.wav` to test supplied mono 24 kHz, 16-bit PCM speech
-instead of typed input. This does not test physical microphone/speaker devices.
+The live tool accepts `--message` for an ordinary clinician question and
+`--speech` for supplied input audio. `--capture-dir NEW_DIR --line "..."` saves
+the first complete generated speech part with a neutral delivery and disables
+local cues/tests for source collection. Check its actual transcript rather than
+assuming verbatim generation. Live mode requires authentication and incurs
+normal Azure usage. Never upload private recordings to public conversion demos.
 
-## Patient Configuration
+## Adding patients and artwork
 
-Each patient has a JSON file in `data/prompts`. The file maps directly to the parameters accepted by `strat_conversation`:
+1. Add a `PatientType` member and matching `PATIENT_SPRITE_SHEETS` entry in enum order in
+   [realtime_conversation.py](src/realtime_conversation.py).
+2. Add coordinates in [hospital_game.py](src/hospital_game.py).
+3. Add a matching JSON file under [data/prompts/](data/prompts/).
+4. Add a transparent 1024x1024 atlas under [patient sprites](data/sprites/patients/):
+   a 4x4 grid of 256x256 cells, with idle/talking/worried/relieved rows.
+   Use the sprite name plus `_atlas.png`. Keep full-body characters centered with
+   feet on a common baseline. Legacy 280x660 cards remain supported when no matching atlas exists.
 
-```json
-{
-  "system_prompts": "Patient personality and symptom instructions.",
-  "disease": "diagnosis hidden from the clinician",
-  "patient_type": "PATIENT_TYPE_ENUM_MEMBER",
-  "tests": [
-    {
-      "description": "test name",
-      "results": "Text result or path to an image"
-    }
-  ]
-}
-```
+Player walk/idle atlases use six/four columns and down/left/right/up rows.
+Runtime validation checks dimensions, blank frames and clipped silhouettes,
+falling back to legacy assets when needed. Source art and prompts are retained.
+Use `python -m tools.prepare_atlas --help` and inspect exported contact sheets
+when preparing replacements.
 
-A test result can be plain text or an image path such as `data/sprites/tests/thermometer.png`.
+## Project layout
 
-## Add A Patient
+| Path | Purpose |
+| --- | --- |
+| `data/` | Patient prompts and game artwork |
+| `assets/audio/` | Source recordings, prepared cues, catalog and license records |
+| `src/` | Game, Realtime routing, playback, cue timing and shared voice engine |
+| `tools/` | Offline auditions, asset preparation, previews and opt-in live checks |
+| `tests/` | Offline regressions and shared audio test doubles |
+| `docs/` | Detailed audio configuration and design |
+| `.artifacts/` | Ignored local developer outputs |
 
-1. Add a member to `PatientType` in `src/realtime_conversation.py`.
-2. Add the patient's sprite-sheet filename to `PATIENT_SPRITE_SHEETS` in the same order as the enum.
-3. Place a transparent `1024x1024` PNG atlas in `data/sprites/patients` using
-  the same base name plus `_atlas` (for example, `12_new_patient_atlas.png`).
-4. Add the patient's hospital coordinates to `PATIENT_POSITIONS` in `src/hospital_game.py`.
-5. Add a matching JSON configuration in `data/prompts`.
-
-Patient atlases use a strict `4x4` grid of `256x256` cells. Rows are idle,
-talking, worried, and relieved; each row contains four animation frames. Keep
-every full-body character centered on a transparent background with feet on the
-same baseline. Legacy `280x660` patient cards remain supported when no matching
-`_atlas.png` file exists.
+Generated cue listening packs also remain locally under `assets/audio/`, but
+are ignored by Git. Do not force-add them to a PR. Source recordings and
+prepared gameplay candidates remain versioned with provenance.
 
 ## Player Animation Assets
 
@@ -408,7 +443,7 @@ Inspect exported contact sheets after generating or preparing replacements.
 Existing patient atlases are reused, with independent animation phases and
 idle/greeting/worried/relieved behavior in the hospital.
 
-## Project Layout
+## Module reference
 
 ```text
 data/

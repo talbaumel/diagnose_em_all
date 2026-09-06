@@ -1,0 +1,5 @@
+# Optional game voice processing and offline auditions.
+numpy==2.2.6
+pyworld==0.3.5
+# PyWORLD 0.3.5 imports pkg_resources, removed in setuptools 81.
+setuptools==80.9.0

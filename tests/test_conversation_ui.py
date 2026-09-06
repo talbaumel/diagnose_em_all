@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import unittest
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import asynccontextmanager, contextmanager, nullcontext
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pygame
@@ -13,10 +15,41 @@ from websockets.http11 import Response
 
 from src.azure_auth import AzureSignInRequired
 from src.game_ui import is_rtl, wrap_text
+from src.hospital_game import load_patient_scenario
+from src.audio_playback import AudioPlaybackError
 from src.care_plan import Prescription, Referral
 from src.consultation_review import AxisScore, ConsultationScorecard, SCORE_AXES
+from tools.preview_performance import RecordingSink
 from src.realtime_conversation import CONSULTATION_PLAYER_DIRECTION_ROW, ConversationResult, PatientAnimator, PatientType, Test, _conversation_session, _diagnosis_matches, _run_conversation, _show_consultation_review, strat_conversation
+from src.realtime_conversation import _test_tools
 
+
+ROOT = Path(__file__).resolve().parents[1]
+COUGH_PATH = ROOT / "assets/audio/coughvid/dry_01.wav"
+
+
+class AudioEvidenceTests(unittest.TestCase):
+    def test_cold_kid_configures_mild_dry_cough(self):
+        scenario = load_patient_scenario(ROOT / "data/prompts/01_common_cold_kid.json")
+        assert scenario.performance_profile is not None
+        self.assertEqual(scenario.performance_profile.clip_path, COUGH_PATH.with_name("dry_01_short.wav"))
+        self.assertIn("call the cough symptom tool", scenario.system_prompts)
+        tools, by_name = _test_tools(scenario.tests)
+        self.assertEqual(len(tools), 2)
+        self.assertTrue(all(test.audio is None for test in by_name.values()))
+        self.assertNotIn("assets/", json.dumps(tools))
+
+    def test_audio_is_optional_and_paths_resolve_from_project_root(self):
+        self.assertIsNone(Test("text", "result").audio_path)
+        self.assertEqual(Test("cough", "Listen", str(COUGH_PATH)).audio_path, COUGH_PATH)
+        test = Test("cough", "Listen", "assets/audio/coughvid/dry_01.wav")
+        self.assertEqual(test.audio_path, COUGH_PATH)
+        self.assertIsNone(test.image_path)
+
+    def test_invalid_audio_configuration_is_rejected(self):
+        for audio in json.loads('["", "  ", "clip.mp3", 42]'):
+            with self.subTest(audio=audio), self.assertRaises(ValueError):
+                Test("cough", "Listen", audio)
 
 class ConversationUITests(unittest.TestCase):
     @classmethod
@@ -576,10 +609,142 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         pygame.quit()
 
+    async def test_complete_session_routes_cough_and_continuation_without_popup(self):
+        scenario = load_patient_scenario(ROOT / "data/prompts/01_common_cold_kid.json")
+        animator = PatientAnimator(0, window=self.window)
+        self.addCleanup(animator.close)
+        stop = asyncio.Event()
+        incoming = asyncio.Queue()
+        websocket = AsyncMock()
+        websocket.recv.return_value = json.dumps({"type": "session.updated"})
+        credential = AsyncMock()
+        credential.get_token.return_value = AccessToken("test-token", 9999999999)
+        sink = RecordingSink()
+        response_count = 0
+        captions = []
+        original_add = animator.add_transcript
+
+        def caption(speaker, text, item_id=None, *, append=False):
+            original_add(speaker, text, item_id, append=append)
+            if speaker == "Patient":
+                captions.append(text)
+                if text == "My nose is runny too.":
+                    stop.set()
+
+        async def send(raw):
+            nonlocal response_count
+            event = json.loads(raw)
+            if event["type"] == "response.create":
+                response_count += 1
+                response_id = f"response-{response_count}"
+                await incoming.put({"type": "response.created", "response": {"id": response_id}})
+                if response_count == 1:
+                    self.assertEqual(event["response"], {})
+                    await incoming.put({
+                        "type": "response.function_call_arguments.done",
+                        "response_id": response_id, "name": "cough", "call_id": "cough-1",
+                    })
+                else:
+                    self.assertEqual(event["response"]["tool_choice"], "none")
+                    await incoming.put({
+                        "type": "response.output_audio.delta", "response_id": response_id,
+                        "item_id": "answer", "delta": base64.b64encode(bytes(4800)).decode(),
+                    })
+                    await incoming.put({
+                        "type": "response.output_audio_transcript.done",
+                        "response_id": response_id, "item_id": "answer",
+                        "transcript": "My nose is runny too.",
+                    })
+                    await incoming.put({
+                        "type": "response.content_part.done", "response_id": response_id,
+                        "item_id": "answer",
+                    })
+                await incoming.put({
+                    "type": "response.done", "response": {"id": response_id, "status": "completed"},
+                })
+
+        async def events():
+            while not stop.is_set():
+                yield json.dumps(await incoming.get())
+
+        @asynccontextmanager
+        async def connection(headers):
+            yield websocket
+
+        websocket.send.side_effect = send
+        websocket.__aiter__.side_effect = events
+        animator._text_messages.put_nowait("Can you cough for me?")
+        with (
+            patch("src.realtime_conversation.GameCredential", return_value=credential),
+            patch("src.realtime_conversation._realtime_connection", connection),
+            patch("src.realtime_conversation._microphone_stream", return_value=nullcontext(None)),
+            patch("src.realtime_conversation.DeviceSink", return_value=sink),
+            patch.object(animator, "add_transcript", side_effect=caption),
+            patch.object(animator, "show_test_result") as show_evidence,
+        ):
+            await asyncio.wait_for(_conversation_session(
+                str(scenario.system_prompts), scenario.disease, 0, scenario.tests,
+                animator, stop, performance_profile=scenario.performance_profile,
+            ), timeout=5)
+        self.assertEqual(captions[:2], ["[coughs]", "My nose is runny too."])
+        show_evidence.assert_not_called()
+        self.assertEqual(response_count, 2)
+        sent = [json.loads(call.args[0]) for call in websocket.send.call_args_list]
+        self.assertFalse(sent[0]["session"]["audio"]["input"]["turn_detection"]["create_response"])
+        self.assertEqual(
+            {tool["name"] for tool in sent[0]["session"]["tools"][-4:]},
+            {"cough", "sniffle", "sneeze", "throat_clear"},
+        )
+        tool_output = next(event["item"]["output"] for event in sent
+                           if event["type"] == "conversation.item.create"
+                           and event["item"]["type"] == "function_call_output")
+        self.assertEqual(json.loads(tool_output), {"status": "played"})
+        credential.close.assert_awaited_once()
+
+    async def test_device_error_uses_audio_unavailable_menu(self):
+        async def animation(animator, stop):
+            while animator._menu is None:
+                await asyncio.sleep(0)
+            self.assertEqual(animator._menu.title, "AUDIO UNAVAILABLE")
+            stop.set()
+
+        with patch(
+            "src.realtime_conversation._conversation_session",
+            new=AsyncMock(side_effect=AudioPlaybackError("Output disconnected")),
+        ), patch.object(PatientAnimator, "run", animation):
+            self.assertEqual(
+                await _run_conversation("prompt", "test", 0, [], window=self.window),
+                ConversationResult.RETURNED,
+            )
+
+    async def test_cough_profile_is_forwarded_to_session(self):
+        scenario = load_patient_scenario(ROOT / "data/prompts/01_common_cold_kid.json")
+        async def session(*args, **kwargs):
+            self.assertIs(kwargs["performance_profile"], scenario.performance_profile)
+            args[4]._won = True
+        with patch("src.realtime_conversation._conversation_session", side_effect=session), patch(
+            "src.realtime_conversation._show_consultation_review", new=AsyncMock()
+        ):
+            result = await _run_conversation(
+                str(scenario.system_prompts), scenario.disease, 0, scenario.tests,
+                window=self.window, performance_profile=scenario.performance_profile,
+            )
+        self.assertEqual(result, ConversationResult.SOLVED)
+
     async def test_completed_consultation_opens_review_after_session_cleanup(self):
         session_closed = asyncio.Event()
 
-        async def session(prompt, disease, index, tests, animator, stop, *, sign_in=False):
+        async def session(
+            prompt,
+            disease,
+            index,
+            tests,
+            animator,
+            stop,
+            *,
+            sign_in=False,
+            performance_profile=None,
+        ):
             try:
                 animator.show_win()
                 stop.set()
@@ -674,20 +839,44 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
         processed = asyncio.Event()
         receiver_closed = asyncio.Event()
         care_sent = asyncio.Event()
+        incoming = asyncio.Queue()
+        response_count = 0
 
         async def send(payload):
+            nonlocal response_count
             event = json.loads(payload)
-            if event["type"] == "response.create":
+            item = event.get("item", {})
+            if item.get("call_id") == "test-2":
+                processed.set()
+            if item.get("type") == "message" and item["content"][0]["text"].startswith("I am prescribing"):
                 care_sent.set()
+            if event["type"] == "response.create":
+                response_count += 1
+                response_id = f"response-{response_count}"
+                await incoming.put({"type": "response.created", "response": {"id": response_id}})
+                if response_count == 1:
+                    for name, call_id in (
+                        ("win", "untrusted"),
+                        ("perform_test_1_temperature", "test-1"),
+                        ("perform_test_1_temperature", "test-2"),
+                    ):
+                        await incoming.put({
+                            "type": "response.function_call_arguments.done",
+                            "response_id": response_id, "name": name, "call_id": call_id,
+                        })
+                    await incoming.put({
+                        "type": "conversation.item.input_audio_transcription.completed",
+                        "transcript": "common cold", "item_id": "voice",
+                    })
+                await incoming.put({
+                    "type": "response.done",
+                    "response": {"id": response_id, "status": "completed"},
+                })
 
         async def events():
             try:
-                yield json.dumps({"type": "response.function_call_arguments.done", "name": "win", "call_id": "untrusted"})
-                yield json.dumps({"type": "conversation.item.input_audio_transcription.completed", "transcript": "common cold", "item_id": "voice"})
-                yield json.dumps({"type": "response.function_call_arguments.done", "name": "perform_test_1_temperature", "call_id": "test-1"})
-                yield json.dumps({"type": "response.function_call_arguments.done", "name": "perform_test_1_temperature", "call_id": "test-2"})
-                processed.set()
-                await asyncio.Event().wait()
+                while True:
+                    yield json.dumps(await incoming.get())
             finally:
                 receiver_closed.set()
 
@@ -714,12 +903,15 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
         animator = PatientAnimator(0, window=self.window, disease="common cold")
         self.addCleanup(animator.close)
         animator._ready = False
+        animator._text_messages.put_nowait("Please check my temperature")
         stop = asyncio.Event()
+        sink = RecordingSink()
         with (
             patch("src.realtime_conversation._realtime_authorization", authorize),
             patch("src.realtime_conversation._realtime_connection", connect),
             patch("src.realtime_conversation._microphone_stream", microphone),
-            patch("src.realtime_conversation.sd.RawOutputStream") as output,
+            patch("src.realtime_conversation.DeviceSink", return_value=sink),
+            patch.object(sink, "abort", wraps=sink.abort) as abort,
             patch("src.realtime_conversation.RELIEVED_DURATION_SECONDS", 0.01),
             patch.object(PatientAnimator, "wait_for_evidence_close", close_evidence),
         ):
@@ -756,7 +948,7 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIsNotNone(animator.metrics.finished_at)
                 self.assertTrue(stop.is_set())
                 self.assertTrue(receiver_closed.is_set())
-                output.return_value.__enter__.return_value.abort.assert_called()
+                abort.assert_called()
             finally:
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
