@@ -89,6 +89,22 @@ def main() -> None:
     animator.draw(0.3)
     pygame.image.save(window, str(arguments.output_dir / "long_evidence.png"))
     animator.close_test_result()
+    animator._open_pokedex()
+    animator._pokedex.messages = [
+        ("You", "What should I ask next?"),
+        ("Dragon Copilot", "Clarify symptom duration and progression. Ask about fever, breathing difficulty, hydration, and relevant exposures.\n\nThese are questions to investigate, not findings already established."),
+    ]
+    animator._pokedex.draft = "Which findings would change the next step?"
+    animator.draw(0.3)
+    pygame.image.save(window, str(arguments.output_dir / "pokedex.png"))
+    animator._pokedex.messages.append(("Dragon Copilot", "Review the history and reassess warning signs. " * 40 + "\nhttps://example.org/" + "reference" * 20))
+    animator.draw(0.3)
+    pygame.image.save(window, str(arguments.output_dir / "pokedex_long.png"))
+    animator._pokedex.messages.append(("Connection", "HAS bot startup or delivery failed (HTTP 502). Check the configured bot and scenario, then retry."))
+    animator._pokedex.status = "Request failed"
+    animator.draw(0.3)
+    pygame.image.save(window, str(arguments.output_dir / "pokedex_error.png"))
+    animator._pokedex.hide()
     animator._open_diagnosis()
     animator._diagnosis_input = "migraine"
     animator.draw(0.3)

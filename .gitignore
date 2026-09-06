@@ -9,8 +9,13 @@ __pycache__/
 .pytest_cache/
 .artifacts/
 
+# Generated listening packs stay local; source recordings and prepared cues are versioned.
+assets/audio/cue_candidates/audition/
+assets/audio/cue_candidates/inline_audition*/
+
 .vscode/*
 !.vscode/launch.json
+!.vscode/tasks.json
 .env
 .env.*
 !.env.example

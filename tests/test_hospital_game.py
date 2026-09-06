@@ -226,8 +226,14 @@ class HospitalFlowTests(unittest.TestCase):
     def test_scores_survive_navigator_recreation_and_later_cases(self):
         patients = self.scenarios[:2]
         scores = iter((7, -2))
+        visiting = iter(patients)
+        self.assertTrue(patients[0].performance_profile.voice.enabled)
+        self.assertIsNone(patients[1].performance_profile)
 
         def consult(**kwargs):
+            patient = next(visiting)
+            self.assertIs(kwargs.get("performance_profile"), patient.performance_profile)
+            self.assertEqual(kwargs["tests"], patient.tests)
             kwargs["on_skill_score"](next(scores))
             return ConversationResult.SOLVED
 

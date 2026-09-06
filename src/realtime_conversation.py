@@ -2,8 +2,8 @@
 
 """Voice conversation client for the Azure OpenAI Realtime API.
 
-Install dependencies with:
-    python -m pip install azure-identity pygame sounddevice websockets
+Install dependencies from the repository root with:
+    uv sync
 
 Sign in from the game when prompted, or authenticate beforehand with az login.
 """
@@ -20,7 +20,7 @@ import time
 from collections import deque
 from collections.abc import AsyncIterator, Callable, Iterator, Sequence
 from contextlib import asynccontextmanager, contextmanager
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -31,16 +31,21 @@ import sounddevice as sd
 import websockets
 from azure.core.credentials import AccessToken
 from azure.core.exceptions import AzureError
+from bidi import get_display
 from websockets.exceptions import InvalidStatus, WebSocketException
 
+from src.animation_assets import load_atlas
 from src.azure_auth import AzureSignInRequired, GameCredential, clear_cached_token
-from src.game_ui import ChoiceMenu, wrap_text
+from src.audio_playback import AudioPlaybackError, DeviceSink
 from src.care_plan import Prescription, Referral
 from src.care_plan_ui import CareOrderForm
 from src.diagnostic_skills import SkillEngine, load_catalog
 from src.skill_browser import SkillBrowser
 from src.skill_confirmation import SkillConfirmation
-from src.skill_routing import SkillCallBatches
+from src.conversation_runtime import ConversationRuntime, EvidencePresenter
+from src.game_ui import ChoiceMenu, chat_font, is_rtl, draw_spinner, wrap_text
+from src.patient_performance import PerformanceProfile
+from src.pokedex_ui import PokedexPanel
 from src.consultation_review import (
     REVIEW_TIMEOUT_SECONDS,
     SCORE_AXES,
@@ -67,7 +72,9 @@ RELIEVED_DURATION_SECONDS = 5
 PROJECT_ROOT = Path(__file__).parents[1]
 PATIENT_SPRITES_DIR = PROJECT_ROOT / "data" / "sprites" / "patients"
 PLAYER_SPRITE_SHEET = PROJECT_ROOT / "data" / "sprites" / "players" / "dr_ash.png"
+PLAYER_IDLE_SPRITE_SHEET = PLAYER_SPRITE_SHEET.with_name("dr_ash_idle_atlas.png")
 PLAYER_FRAME_SIZE = (128, 200)
+CONSULTATION_PLAYER_DIRECTION_ROW = 2
 CONSULTATION_CHARACTER_HEIGHT = 124
 HOSPITAL_MAP_IMAGE = (
     PROJECT_ROOT / "data" / "sprites" / "world" / "hospital_floor.png"
@@ -225,12 +232,18 @@ class Test:
     description: str
     results: str
     evidence_image: str | None = None
+    audio: str | None = None
 
     def __post_init__(self) -> None:
         if not self.description.strip():
             raise ValueError("Test description must not be empty")
         if not self.results.strip():
             raise ValueError("Test results must not be empty")
+        if self.audio is not None:
+            if not isinstance(self.audio, str) or not self.audio.strip():
+                raise ValueError("Test audio must be a non-empty WAV path")
+            if Path(self.audio).suffix.casefold() != ".wav":
+                raise ValueError("Test audio must be a WAV file")
 
     @property
     def image_path(self) -> Path | None:
@@ -242,6 +255,13 @@ class Test:
         if not path.is_file():
             raise FileNotFoundError(f"Evidence image not found: {path}")
         return path
+
+    @property
+    def audio_path(self) -> Path | None:
+        if self.audio is None:
+            return None
+        path = Path(self.audio).expanduser()
+        return path if path.is_absolute() else PROJECT_ROOT / path
 
 
 PATIENT_TYPES = tuple(patient_type.value for patient_type in PatientType)
@@ -401,6 +421,7 @@ def _patient_instructions(system_prompt: str, disease: str, review_records: dict
 def _diagnosis_matches(submitted: str, disease: str) -> bool:
     submitted_words = re.findall(r"\w+", submitted.casefold().replace("_", " "))
     disease_words = re.findall(r"\w+", disease.casefold().replace("_", " "))
+    print(f"Diagnosis check: submitted={submitted_words}, disease={disease_words}")
     return bool(disease_words) and submitted_words == disease_words
 
 
@@ -588,42 +609,19 @@ class PatientAnimator:
             )
             for state, frames in raw_patient_frames.items()
         }
-        self._player_sheet = pygame.image.load(str(PLAYER_SPRITE_SHEET)).convert_alpha()
-        raw_player_frames = {
-            row: tuple(
-                extract_character(
-                    self._player_sheet.subsurface(
-                        pygame.Rect(
-                            frame_index * PLAYER_FRAME_SIZE[0],
-                            row * PLAYER_FRAME_SIZE[1],
-                            *PLAYER_FRAME_SIZE,
-                        )
-                    ).copy()
-                )
-                for frame_index in range(4)
-            )
-            for row in range(2)
-        }
+        facing_patient_frames = load_atlas(PLAYER_IDLE_SPRITE_SHEET, 4)[
+            CONSULTATION_PLAYER_DIRECTION_ROW
+        ]
         player_source_size = (
-            max(
-                frame.get_width()
-                for frames in raw_player_frames.values()
-                for frame in frames
-            ),
-            max(
-                frame.get_height()
-                for frames in raw_player_frames.values()
-                for frame in frames
-            ),
+            max(frame.get_width() for frame in facing_patient_frames),
+            max(frame.get_height() for frame in facing_patient_frames),
         )
-        self._player_frames = {
-            row: normalize_character_frames(
-                frames,
-                CONSULTATION_CHARACTER_HEIGHT,
-                player_source_size,
-            )
-            for row, frames in raw_player_frames.items()
-        }
+        normalized_player_frames = normalize_character_frames(
+            facing_patient_frames,
+            CONSULTATION_CHARACTER_HEIGHT,
+            player_source_size,
+        )
+        self._player_frames = {row: normalized_player_frames for row in range(2)}
         consultation_room = pygame.image.load(
             str(CONSULTATION_ROOM_IMAGE)
         ).convert()
@@ -658,7 +656,7 @@ class PatientAnimator:
         self._skill_decision: asyncio.Future[bool] | None = None
         self._skills_busy = False
         self._skills_chat_was_focused = False
-        self._skills_button = pygame.Rect(290, 384, 172, 28)
+        self._skills_button = pygame.Rect(234, 384, 90, 28)
         self._discovered_tests_button = pygame.Rect(326, 34, 138, 24)
         self._review_open = False
         self._review_loading = False
@@ -678,8 +676,11 @@ class PatientAnimator:
         self._diagnosis_feedback = ""
         self._diagnosis_focus = 0
         self._chat_was_focused = False
-        self._diagnose_button = pygame.Rect(18, 384, 124, 28)
-        self._care_button = pygame.Rect(154, 384, 124, 28)
+        self._diagnose_button = pygame.Rect(18, 384, 100, 28)
+        self._care_button = pygame.Rect(126, 384, 100, 28)
+        self._pokedex_button = pygame.Rect(332, 384, 130, 28)
+        self._pokedex = PokedexPanel()
+        self._pokedex_chat_was_focused = False
         self._care_form: CareOrderForm | None = None
         self._care_chat_was_focused = False
         self._diagnosis_input_rect = pygame.Rect(48, 178, 384, 40)
@@ -704,12 +705,12 @@ class PatientAnimator:
         self._text_messages: asyncio.Queue[str] = asyncio.Queue()
         self._text_input = ""
         self._text_focused = False
-        self._text_input_rect = pygame.Rect(18, 424, 386, 40)
-        self._text_send_button = pygame.Rect(414, 424, 48, 40)
+        self._text_input_rect = pygame.Rect(18, 418, 386, 40)
+        self._text_send_button = pygame.Rect(414, 418, 48, 40)
         self._eyebrow_font = pygame.font.SysFont("Avenir Next", 10, bold=True)
         self._case_font = pygame.font.SysFont("Avenir Next", 16, bold=True)
-        self._status_font = pygame.font.SysFont("Avenir Next", 11, bold=True)
-        self._text_font = pygame.font.SysFont("Avenir Next", 15)
+        self._status_font = chat_font(11, bold=True)
+        self._text_font = chat_font(15)
         self._test_title_font = pygame.font.SysFont("Avenir Next", 16, bold=True)
         self._test_result_font = pygame.font.SysFont("Avenir Next", 18, bold=True)
         self._win_font = pygame.font.SysFont("Avenir Next", 32, bold=True)
@@ -723,7 +724,7 @@ class PatientAnimator:
 
     @property
     def push_to_talk(self) -> bool:
-        return self._push_to_talk.is_set() and not self._diagnosis_open and self._care_form is None and not self.skills_modal
+        return self._push_to_talk.is_set() and not self._diagnosis_open and self._care_form is None and not self.skills_modal and not self._pokedex.open
 
     @property
     def skills_modal(self) -> bool:
@@ -752,6 +753,7 @@ class PatientAnimator:
         self._relieved_until = time.monotonic() + RELIEVED_DURATION_SECONDS
 
     def show_win(self) -> None:
+        self._pokedex.hide()
         self.metrics.finish()
         self._won = True
         self._diagnosis_open = False
@@ -775,7 +777,7 @@ class PatientAnimator:
             self.add_transcript("Case", self._diagnosis_feedback)
 
     def _open_diagnosis(self) -> None:
-        if self.skills_modal:
+        if self.skills_modal or self._pokedex.open:
             return
         if not self._ready or self.won or self.evidence_open or self._menu is not None or self._disease is None or self._care_form is not None:
             return
@@ -805,6 +807,8 @@ class PatientAnimator:
         if self.skills_modal:
             self.add_transcript("Case", "Resolve the pending skill request before finishing.")
             return
+        if self._pokedex.open:
+            return
         if not self._ready or self.won or not self._diagnosis_confirmed.is_set() or self.evidence_open or self._diagnosis_open or self._care_form is not None:
             return
         if self._sending or not self._text_messages.empty():
@@ -814,7 +818,7 @@ class PatientAnimator:
         self._consultation_finished.set()
 
     def _open_care_menu(self) -> None:
-        if self.skills_modal:
+        if self.skills_modal or self._pokedex.open:
             return
         if not self._ready or self.won or self.evidence_open or self._diagnosis_open or self._menu is not None or self._care_form is not None:
             return
@@ -822,6 +826,27 @@ class PatientAnimator:
         self._set_text_focus(False)
         plan = self.metrics.care_plan
         self._menu = ChoiceMenu("CARE PLAN", ("Add Prescription", "Add Referral", "Review Orders", "Keep Consulting"), f"{len(plan.prescriptions)} prescriptions / {len(plan.referrals)} referrals")
+
+    def _open_pokedex(self) -> None:
+        if not self._ready or self.won or self.evidence_open or self._diagnosis_open or self._menu is not None or self._care_form is not None or self._pokedex.open or self.skills_modal:
+            return
+        self._pokedex_chat_was_focused = self._text_focused
+        self._set_text_focus(False)
+        self._pokedex.show()
+
+    def _pokedex_context(self) -> dict:
+        return {
+            "transcript": [
+                {"speaker": speaker, "text": text}
+                for speaker, text in self._transcript
+                if speaker in ("You", "Patient")
+            ],
+            "discovered_tests": [
+                {"name": name, "result": "Image finding not provided to HAS." if Path(result).suffix.lower() in IMAGE_SUFFIXES else result}
+                for name, result in self.metrics.discovered_tests.items()
+            ],
+            "care_plan": asdict(self.metrics.care_plan),
+        }
 
     def _record_care_order(self, order: Prescription | Referral) -> None:
         if not self.metrics.care_plan.add(order):
@@ -833,6 +858,8 @@ class PatientAnimator:
         self._sending = True
 
     def show_test_result(self, test: Test) -> None:
+        if self._pokedex.open:
+            self._pokedex.focus(False)
         self._diagnosis_open = False
         self._set_text_focus(False)
         self._evidence_scroll = 0
@@ -870,7 +897,7 @@ class PatientAnimator:
         self.show_test_result(Test("Used skills and results", "\n\n".join(reports) if reports else "No skills used."))
 
     def _open_skills(self) -> None:
-        if not self._ready or self.won or self.evidence_open or self._menu or self._diagnosis_open or self._care_form or self.skills_modal:
+        if not self._ready or self.won or self.evidence_open or self._menu or self._diagnosis_open or self._care_form or self.skills_modal or self._pokedex.open:
             return
         self._skills_chat_was_focused = self._text_focused
         self._set_text_focus(False)
@@ -893,7 +920,7 @@ class PatientAnimator:
         return await self._text_messages.get()
 
     def _submit_text(self) -> None:
-        if self.skills_modal:
+        if self.skills_modal or self._pokedex.open:
             return
         if not self._ready or self.evidence_open or self.won or self._menu is not None or self._diagnosis_open or self._care_form is not None:
             return
@@ -927,13 +954,19 @@ class PatientAnimator:
             self._transcript_scroll = max(0, self._transcript_scroll + len(self._transcript_lines) - previous_line_count)
 
     def show_error(self, message: str) -> None:
+        self._pokedex.hide()
         self._ready = False
         self._care_form = None
         self._diagnosis_open = False
         self._set_text_focus(False)
         self._menu = ChoiceMenu("CONNECTION UNAVAILABLE", ("Retry", "Return to Hospital"), message)
 
+    def show_audio_error(self, message: str) -> None:
+        self.show_error(message)
+        self._menu = ChoiceMenu("AUDIO UNAVAILABLE", ("Retry", "Return to Hospital"), message)
+
     def show_sign_in(self, message: str, *, pending: bool = False) -> None:
+        self._pokedex.hide()
         self._ready = False
         self._set_text_focus(False)
         self._menu = ChoiceMenu(
@@ -951,8 +984,9 @@ class PatientAnimator:
         end = len(self._transcript_lines) - self._transcript_scroll
         lines = self._transcript_lines[max(0, end - visible_lines):end]
         for index, line in enumerate(lines):
-            text = self._status_font.render(line, True, UI_INK)
-            self._screen.blit(text, (18, 301 + index * 17))
+            text = self._status_font.render(get_display(line), True, UI_INK)
+            text_x = 456 - text.get_width() if is_rtl(line) else 18
+            self._screen.blit(text, (text_x, 301 + index * 17))
         if len(self._transcript_lines) > visible_lines:
             track = pygame.Rect(468, 300, 3, 64)
             pygame.draw.rect(self._screen, UI_MUTED, track)
@@ -960,6 +994,7 @@ class PatientAnimator:
             pygame.draw.rect(self._screen, UI_TEAL, (468, 300 + round(48 * fraction), 3, 16))
 
     def _set_text_focus(self, focused: bool) -> None:
+        focused = focused and not self._pokedex.open
         self._text_focused = focused
         self._push_to_talk.clear()
         if focused:
@@ -973,6 +1008,8 @@ class PatientAnimator:
         self._evidence_closed.set()
         if self._care_form is not None:
             self._care_form.focus(self._care_form.focus_index)
+        if self._pokedex.open:
+            self._pokedex.focus(True)
 
     def _current_state(self) -> str:
         if time.monotonic() < self._relieved_until:
@@ -1166,6 +1203,22 @@ class PatientAnimator:
         pygame.draw.rect(self._screen, UI_TEAL if enabled else (91, 119, 116), self._skills_button, border_radius=5)
         skills_label = self._status_font.render("SKILLS / F5", True, UI_WHITE)
         self._screen.blit(skills_label, skills_label.get_rect(center=self._skills_button.center))
+        helper_enabled = self._ready and not self.won
+        helper_hovered = self._pokedex_button.collidepoint(self._screen_position(pygame.mouse.get_pos()))
+        helper_color = UI_WHITE if helper_hovered else UI_PAPER
+        pygame.draw.rect(self._screen, helper_color if helper_enabled else (193, 211, 207), self._pokedex_button, border_radius=5)
+        pygame.draw.rect(self._screen, UI_TEAL, self._pokedex_button, width=1, border_radius=5)
+        pokedex_label = self._status_font.render("Dragon Copilot", True, UI_INK)
+        brand_width = pokedex_label.get_width() + 32
+        brand_x = self._pokedex_button.centerx - brand_width // 2
+        if self._pokedex.button_logo is not None:
+            self._screen.blit(self._pokedex.button_logo, (brand_x, self._pokedex_button.y + 2))
+        self._screen.blit(pokedex_label, pokedex_label.get_rect(midleft=(brand_x + 32, self._pokedex_button.centery)))
+        status_text, status_color = self._status(state)
+        compact_status = self._status_font.render(status_text, True, status_color)
+        status_x = 462 - compact_status.get_width()
+        pygame.draw.circle(self._screen, status_color, (status_x - 10, 468), 3)
+        self._screen.blit(compact_status, (status_x, 461))
 
         input_border = UI_CORAL if self._text_focused else (91, 119, 116)
         pygame.draw.rect(
@@ -1183,10 +1236,13 @@ class PatientAnimator:
         )
         input_text = self._text_input or "Message the patient..."
         input_color = UI_INK if self._text_input else (104, 123, 120)
-        rendered_input = self._text_font.render(input_text, True, input_color)
+        input_rtl = is_rtl(input_text)
+        rendered_input = self._text_font.render(get_display(input_text), True, input_color)
         input_area = self._text_input_rect.inflate(-18, -8)
         input_x = input_area.x
-        if rendered_input.get_width() > input_area.width:
+        if input_rtl:
+            input_x = max(input_area.x, input_area.right - rendered_input.get_width())
+        elif rendered_input.get_width() > input_area.width:
             input_x = input_area.right - rendered_input.get_width()
         previous_clip = self._screen.get_clip()
         self._screen.set_clip(input_area)
@@ -1197,6 +1253,8 @@ class PatientAnimator:
             and int(time.monotonic() * 2) % 2 == 0
         ):
             cursor_x = min(input_rect.right + 2, input_area.right - 2) if self._text_input else input_area.x
+            if input_rtl:
+                cursor_x = max(input_area.x, input_rect.left - 2)
             pygame.draw.line(
                 self._screen,
                 UI_CORAL,
@@ -1539,7 +1597,11 @@ class PatientAnimator:
         pygame.draw.rect(self._screen, button_color, self._review_return_button, border_radius=5)
         button_text = "Scoring..." if self._review_loading else "Return to Hospital"
         label = self._text_font.render(button_text, True, UI_WHITE)
-        self._screen.blit(label, label.get_rect(center=self._review_return_button.center))
+        label_rect = label.get_rect(center=self._review_return_button.center)
+        if self._review_loading:
+            label_rect.centerx += 10
+            draw_spinner(self._screen, (label_rect.left - 14, label_rect.centery), 7, UI_WHITE)
+        self._screen.blit(label, label_rect)
 
     def _handle_review_event(self, event: pygame.event.Event, stop: asyncio.Event) -> None:
         key = event.key if event.type == pygame.KEYDOWN else None
@@ -1588,12 +1650,15 @@ class PatientAnimator:
             self._skill_browser.draw(self._screen)
         if self._skill_confirmation is not None:
             self._skill_confirmation.draw(self._screen)
+        if self._pokedex.open and not self.evidence_open and not self.won:
+            self._pokedex.draw(self._screen)
 
         pygame.transform.scale(self._screen, self._window.get_size(), self._window)
         pygame.display.flip()
 
     def handle_event(self, event: pygame.event.Event, stop: asyncio.Event) -> None:
         if event.type == pygame.QUIT:
+            self._pokedex.hide()
             self.quit_requested = True
             self._running = False
             self._push_to_talk.clear()
@@ -1601,6 +1666,8 @@ class PatientAnimator:
             return
         if event.type == pygame.WINDOWFOCUSLOST:
             self._set_text_focus(False)
+            if self._pokedex.open:
+                self._pokedex.focus(False)
             if self._care_form is not None:
                 self._care_form.focus(-1)
             if self._diagnosis_open:
@@ -1675,6 +1742,12 @@ class PatientAnimator:
         if self._diagnosis_open:
             self._handle_diagnosis_event(event)
             return
+        if self._pokedex.open:
+            position = self._screen_position(event.pos) if clicked else (-1, -1)
+            self._pokedex.handle_event(event, position, self._pokedex_context())
+            if not self._pokedex.open:
+                self._set_text_focus(self._pokedex_chat_was_focused)
+            return
         if self._skills_busy:
             return
         if key == pygame.K_ESCAPE:
@@ -1694,6 +1767,8 @@ class PatientAnimator:
             self._open_care_menu()
         elif key == pygame.K_F5:
             self._open_skills()
+        elif key == pygame.K_F6:
+            self._open_pokedex()
         elif event.type == pygame.MOUSEWHEEL:
             self._transcript_scroll = max(0, self._transcript_scroll + event.y * 2)
         elif key in (pygame.K_PAGEUP, pygame.K_PAGEDOWN):
@@ -1717,6 +1792,8 @@ class PatientAnimator:
                 self._open_care_menu()
             elif self._skills_button.collidepoint(position):
                 self._open_skills()
+            elif self._pokedex_button.collidepoint(position):
+                self._open_pokedex()
             elif self._discovered_tests_button.collidepoint(position):
                 self._show_discovered_tests()
             elif self._text_send_button.collidepoint(position):
@@ -1735,6 +1812,7 @@ class PatientAnimator:
         stop.set()
 
     def close(self) -> None:
+        self._pokedex.hide()
         pygame.key.stop_text_input()
         if self._owns_display:
             pygame.quit()
@@ -1763,6 +1841,9 @@ async def _realtime_authorization(*, sign_in: bool = False) -> AsyncIterator[dic
 async def _resolve_skill_call(
     call: dict, skills_by_tool: dict[str, str], animator: PatientAnimator,
     is_current: Callable[[], bool] = lambda: True,
+    *,
+    present_result: EvidencePresenter | None = None,
+    evidence_audio: dict[str, str] | None = None,
 ) -> dict:
     """Validate, obtain real local approval, then execute exactly one proposal."""
     engine = animator.skill_engine
@@ -1791,6 +1872,8 @@ async def _resolve_skill_call(
     }
     animator.metrics.skill_requests.append(record)
     proposal = None
+    evidence = None
+    result = None
     restore_focus: bool | None = None
     try:
         tool_name = call.get("name")
@@ -1805,7 +1888,7 @@ async def _resolve_skill_call(
             raise ValueError("Skill parameters must be an object.")
         proposal = engine.prepare(skill_id, parameters, tuple(animator._transcript))
         # Do not discard another modal or its draft when a tool response arrives.
-        while animator._menu or animator._diagnosis_open or animator._care_form or animator._skill_browser or animator.evidence_open:
+        while animator._menu or animator._diagnosis_open or animator._care_form or animator._skill_browser or animator.evidence_open or animator._pokedex.open:
             if not is_current():
                 break
             await asyncio.sleep(0.02)
@@ -1823,8 +1906,15 @@ async def _resolve_skill_call(
             if result["status"] == "completed":
                 animator.metrics.discover_test(result["name"], result["result"])
             explanation = f"{result['result']}\n\nAppropriate use: {result.get('points', 0):+d}\n{result.get('rationale', '')}"
-            animator.show_test_result(Test(result["name"], explanation, result.get("image_path")))
-            await animator.wait_for_evidence_close()
+            evidence = Test(
+                result["name"], explanation, evidence_image=result.get("image_path"),
+                audio=(evidence_audio or {}).get(result["name"].casefold()) if result["status"] == "completed" else None,
+            )
+            if present_result is None:
+                animator.show_test_result(evidence)
+                await animator.wait_for_evidence_close()
+            else:
+                result.update(await present_result(evidence))
         record["status"] = result["status"]
         animator.add_transcript("Skill", f"{result.get('name', skill_id)}: {result['status']}. {result['result']}")
         return result
@@ -1834,10 +1924,16 @@ async def _resolve_skill_call(
         animator.add_transcript("Skill", f"Not performed: {error}")
         return {"status": "clarification_required", "result": str(error), "points": 0}
     except asyncio.CancelledError:
+        if evidence is not None and animator._test_result is evidence:
+            animator.close_test_result()
         if record["status"] == "pending":
             record["status"] = "interrupted"
             if proposal is not None:
                 engine.cancel(proposal)
+        elif result is not None:
+            # Interruption dismisses the report, not an already completed action.
+            animator.add_transcript("Skill", f"{result.get('name', skill_id)}: {result['status']}. {result['result']}")
+            return result
         raise
     finally:
         animator.metrics.diagnostic_skills = engine.summary()
@@ -1854,6 +1950,7 @@ async def _conversation_session(
     stop: asyncio.Event,
     *,
     sign_in: bool = False,
+    performance_profile: PerformanceProfile | None = None,
 ) -> bool:
     test_tools, tests_by_tool = _test_tools(tests)
     animator.skill_engine = SkillEngine(tuple(PatientType)[patient_index].name, tests)
@@ -1876,9 +1973,13 @@ async def _conversation_session(
                             "type": "realtime",
                             "instructions": _patient_instructions(
                                 system_prompt, disease, animator.skill_engine.review_records
-                            ),
+                            ) + ("\n\n" + performance_profile.instructions if performance_profile else ""),
                             "output_modalities": ["audio"],
-                            "tools": [*test_tools, SKILL_CONTEXT_TOOL],
+                            "tools": [
+                                *test_tools,
+                                SKILL_CONTEXT_TOOL,
+                                *(performance_profile.cue_tools if performance_profile else []),
+                            ],
                             "tool_choice": "auto",
                             "audio": {
                                 "input": {
@@ -1892,7 +1993,7 @@ async def _conversation_session(
                                         "threshold": 0.5,
                                         "prefix_padding_ms": 300,
                                         "silence_duration_ms": 500,
-                                        "create_response": True,
+                                        "create_response": False,
                                         "interrupt_response": False,
                                     },
                                 },
@@ -1924,16 +2025,14 @@ async def _conversation_session(
 
             loop = asyncio.get_running_loop()
             audio_queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=20)
-            assistant_speaking = asyncio.Event()
-            cancelled_response = asyncio.Event()
-            skill_batches = SkillCallBatches()
-            skill_queue: asyncio.Queue[tuple[int, list[dict]]] = asyncio.Queue()
+            microphone_error: asyncio.Future[None] = loop.create_future()
 
             def enqueue_audio(audio: bytes) -> None:
                 try:
                     audio_queue.put_nowait(audio)
                 except asyncio.QueueFull:
-                    pass
+                    if not microphone_error.done():
+                        microphone_error.set_exception(RealtimeSessionError("Microphone queue overflow; retry the consultation"))
 
             def microphone_callback(
                 input_data: Any,
@@ -1948,188 +2047,29 @@ async def _conversation_session(
                     audio = b"\x00" * len(audio)
                 loop.call_soon_threadsafe(enqueue_audio, audio)
 
-            with (
-                _microphone_stream(microphone_callback) as input_stream,
-                sd.RawOutputStream(
-                    samplerate=SAMPLE_RATE,
-                    channels=CHANNELS,
-                    dtype="int16",
-                ) as output_stream,
-            ):
-                animator.set_microphone_available(input_stream is not None)
-                animator._ready = True
-                animator.metrics.start()
-                print(
-                    "Conversation started. Diagnose the patient or press Ctrl+C."
-                    if input_stream is not None
-                    else "Conversation started in text-only mode."
+            sink = DeviceSink()
+            try:
+                runtime = ConversationRuntime(
+                    websocket, animator, stop, {}, sink,
+                    profile=performance_profile,
+                    skill_tools=tests_by_tool,
+                    skill_handler=lambda call, current, present: _resolve_skill_call(
+                        call, tests_by_tool, animator, current,
+                        present_result=present,
+                        evidence_audio={test.description.casefold(): test.audio for test in tests if test.audio},
+                    ),
                 )
-
-                async def send_microphone_audio() -> None:
-                    while not stop.is_set():
-                        audio = await audio_queue.get()
-                        if animator.push_to_talk and (assistant_speaking.is_set() or skill_batches.active_response):
-                            cancelled_response.set()
-                            skill_batches.cancel()
-                            assistant_speaking.clear()
-                            animator.set_talking(False)
-                            await websocket.send(
-                                json.dumps({"type": "response.cancel"})
-                            )
-                        await websocket.send(
-                            json.dumps(
-                                {
-                                    "type": "input_audio_buffer.append",
-                                    "audio": base64.b64encode(audio).decode("ascii"),
-                                }
-                            )
-                        )
-
-                async def send_text_messages() -> None:
-                    while not stop.is_set():
-                        message = await animator.next_text_message()
-                        if animator.won:
-                            continue
-                        print(f"\nYou: {message}")
-                        active = assistant_speaking.is_set() or skill_batches.active_response is not None
-                        skill_batches.cancel()
-                        if active:
-                            cancelled_response.set()
-                            assistant_speaking.clear()
-                            animator.set_talking(False)
-                            await websocket.send(
-                                json.dumps({"type": "response.cancel"})
-                            )
-                        await websocket.send(
-                            json.dumps(
-                                {
-                                    "type": "conversation.item.create",
-                                    "item": {
-                                        "type": "message",
-                                        "role": "user",
-                                        "content": [
-                                            {
-                                                "type": "input_text",
-                                                "text": message,
-                                            }
-                                        ],
-                                    },
-                                }
-                            )
-                        )
-                        await websocket.send(json.dumps({"type": "response.create"}))
-                        animator._sending = False
-                        animator._sent_until = time.monotonic() + 1.2
-
-                async def finish_diagnosis() -> None:
-                    await animator._consultation_finished.wait()
-                    cancelled_response.set()
-                    assistant_speaking.clear()
-                    animator.set_talking(False)
-                    output_stream.abort()
-                    await asyncio.sleep(RELIEVED_DURATION_SECONDS)
-                    stop.set()
-
-                async def perform_skill_calls() -> None:
-                    while not stop.is_set():
-                        generation, calls = await skill_queue.get()
-                        animator._skills_busy = True
-                        try:
-                            for call in calls:
-                                if generation != skill_batches.generation or animator.won:
-                                    result = {"status": "cancelled", "result": "Response interrupted before action.", "points": 0}
-                                else:
-                                    result = await _resolve_skill_call(
-                                        call, tests_by_tool, animator,
-                                        lambda: generation == skill_batches.generation,
-                                    )
-                                await websocket.send(json.dumps({
-                                    "type": "conversation.item.create",
-                                    "item": {
-                                        "type": "function_call_output",
-                                        "call_id": call["call_id"],
-                                        "output": json.dumps(result),
-                                    },
-                                }))
-                            # One continuation per completed batch, never per compound subcall.
-                            if generation == skill_batches.generation and not animator.won:
-                                await websocket.send(json.dumps({"type": "response.create"}))
-                        finally:
-                            skill_queue.task_done()
-                            animator._skills_busy = not skill_queue.empty()
-
-                async def receive_events() -> None:
-                    async for raw_message in websocket:
-                        event = json.loads(raw_message)
-                        event_type = event.get("type")
-                        calls = skill_batches.collect(event)
-                        if calls and not animator.won:
-                            animator._skills_busy = True
-                            animator._push_to_talk.clear()
-                            skill_queue.put_nowait((skill_batches.generation, calls))
-                        if animator.won and event_type != "conversation.item.input_audio_transcription.completed":
-                            continue
-
-                        if event_type == "response.output_audio.delta":
-                            if cancelled_response.is_set():
-                                continue
-                            if not assistant_speaking.is_set():
-                                assistant_speaking.set()
-                                while not audio_queue.empty():
-                                    audio_queue.get_nowait()
-                            animator.set_talking(True)
-                            audio = base64.b64decode(event["delta"])
-                            await asyncio.to_thread(output_stream.write, audio)
-                        elif event_type in {
-                            "response.output_audio.done",
-                            "response.done",
-                        }:
-                            animator.set_talking(False)
-                            assistant_speaking.clear()
-                            cancelled_response.clear()
-                        elif event_type == "response.output_audio_transcript.delta":
-                            if not cancelled_response.is_set():
-                                delta = event.get("delta", "")
-                                animator.add_transcript("Patient", delta, event.get("item_id") or event.get("response_id"), append=True)
-                                print(delta, end="", flush=True)
-                        elif event_type == "response.output_audio_transcript.done":
-                            if not cancelled_response.is_set():
-                                animator.add_transcript("Patient", event.get("transcript", ""), event.get("item_id") or event.get("response_id"))
-                        elif event_type == (
-                            "conversation.item.input_audio_transcription.completed"
-                        ):
-                            transcript = event.get("transcript", "")
-                            animator.add_transcript("You", transcript, event.get("item_id"))
-                            print(f"\nYou: {transcript}")
-                        elif event_type == "error":
-                            error = event.get("error", {})
-                            if _is_inactive_cancellation(error):
-                                cancelled_response.clear()
-                                continue
-                            raise RealtimeSessionError(
-                                f"Realtime API error: {error.get('message', error)}"
-                            )
-                    if not stop.is_set():
-                        raise ConnectionError("The patient connection closed unexpectedly")
-
-                text_sender = asyncio.create_task(send_text_messages())
-                receiver = asyncio.create_task(receive_events())
-                diagnosis = asyncio.create_task(finish_diagnosis())
-                stopped = asyncio.create_task(stop.wait())
-                skills = asyncio.create_task(perform_skill_calls())
-                tasks = {text_sender, receiver, diagnosis, stopped, skills}
-                if input_stream is not None:
-                    tasks.add(asyncio.create_task(send_microphone_audio()))
-                try:
-                    done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-                    for task in done:
-                        task.result()
-                finally:
-                    for task in tasks:
-                        task.cancel()
-                    output_stream.abort()
-                    await asyncio.gather(*tasks, return_exceptions=True)
+                await _run_connected_session(
+                    websocket, animator, stop, runtime, microphone_callback,
+                    audio_queue, microphone_error,
+                )
                 return animator.won
+            finally:
+                sink.close()
+                if not microphone_error.done():
+                    microphone_error.cancel()
+                elif not microphone_error.cancelled():
+                    microphone_error.exception()
 
 
 async def _show_consultation_review(
@@ -2148,8 +2088,12 @@ async def _show_consultation_review(
     async def request_scorecard() -> ConsultationScorecard:
         async with _realtime_authorization() as headers:
             return await score_consultation(
-                tuple(animator._transcript), disease, system_prompt,
-                animator.metrics, animator._available_test_count, headers,
+                tuple(animator._transcript),
+                disease,
+                system_prompt,
+                animator.metrics,
+                animator._available_test_count,
+                headers,
             )
 
     async def generate_reviews() -> None:
@@ -2157,11 +2101,26 @@ async def _show_consultation_review(
             animator._review_loading = True
             animator._review_error = ""
             try:
-                animator._scorecard = await asyncio.wait_for(request_scorecard(), REVIEW_TIMEOUT_SECONDS)
+                animator._scorecard = await asyncio.wait_for(
+                    request_scorecard(), REVIEW_TIMEOUT_SECONDS
+                )
             except httpx.HTTPStatusError as error:
-                animator._review_error = f"Scoring service returned HTTP {error.response.status_code}. Retry scoring or return to the hospital. Your diagnosis remains confirmed."
-            except (AzureError, httpx.RequestError, TimeoutError, asyncio.TimeoutError, ValueError):
-                animator._review_error = "Scoring could not be completed. Retry scoring or return to the hospital. Your diagnosis remains confirmed."
+                animator._review_error = (
+                    "Scoring service returned HTTP "
+                    f"{error.response.status_code}. Retry scoring or return to the "
+                    "hospital. Your diagnosis remains confirmed."
+                )
+            except (
+                AzureError,
+                httpx.RequestError,
+                TimeoutError,
+                asyncio.TimeoutError,
+                ValueError,
+            ):
+                animator._review_error = (
+                    "Scoring could not be completed. Retry scoring or return to the "
+                    "hospital. Your diagnosis remains confirmed."
+                )
             animator._review_loading = False
             animator._review_scroll = 0
             await animator._review_retry.wait()
@@ -2170,7 +2129,9 @@ async def _show_consultation_review(
     animation = asyncio.create_task(animator.run(review_stop))
     scoring = asyncio.create_task(generate_reviews())
     try:
-        done, pending = await asyncio.wait({animation, scoring}, return_when=asyncio.FIRST_COMPLETED)
+        done, _ = await asyncio.wait(
+            {animation, scoring}, return_when=asyncio.FIRST_COMPLETED
+        )
         for task in done:
             task.result()
     finally:
@@ -2179,6 +2140,123 @@ async def _show_consultation_review(
             task.cancel()
         await asyncio.gather(animation, scoring, return_exceptions=True)
         animator._review_open = False
+
+
+async def _run_connected_session(
+    websocket, animator: PatientAnimator, stop: asyncio.Event,
+    runtime: ConversationRuntime, microphone_callback, audio_queue, microphone_error,
+) -> None:
+    with _microphone_stream(microphone_callback) as input_stream:
+        animator.set_microphone_available(input_stream is not None)
+        animator._ready = True
+        animator.metrics.start()
+        print("Conversation started." if input_stream is not None else "Conversation started in text-only mode.")
+
+        async def send_microphone_audio() -> None:
+            while not stop.is_set():
+                audio = await audio_queue.get()
+                await runtime.send({
+                    "type": "input_audio_buffer.append",
+                    "audio": base64.b64encode(audio).decode("ascii"),
+                })
+
+        async def send_text_messages() -> None:
+            while not stop.is_set():
+                message = await animator.next_text_message()
+                if animator.won:
+                    continue
+                print(f"\nYou: {message}")
+                await runtime.interrupt(new_turn=True)
+                runtime.user_talking = False
+                while not audio_queue.empty():
+                    audio_queue.get_nowait()
+                await runtime.send({"type": "input_audio_buffer.clear"})
+                await runtime.send({
+                    "type": "conversation.item.create",
+                    "item": {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": message}],
+                    },
+                })
+                runtime.queue_user(None)
+                animator._sending = False
+                animator._sent_until = time.monotonic() + 1.2
+
+        async def watch_push_to_talk() -> None:
+            pressed = False
+            while not stop.is_set():
+                if animator.push_to_talk and not pressed:
+                    runtime.user_talking = True
+                    await runtime.interrupt(new_turn=True)
+                pressed = animator.push_to_talk
+                # VAD commits the voice turn; releasing Shift alone must not
+                # create a response for silence.
+                await asyncio.sleep(0.005)
+
+        async def finish_consultation() -> None:
+            await animator._consultation_finished.wait()
+            await runtime.interrupt()
+            await asyncio.sleep(RELIEVED_DURATION_SECONDS)
+            stop.set()
+
+        async def receive_events() -> None:
+            async for raw_message in websocket:
+                event = json.loads(raw_message)
+                event_type = event.get("type")
+                if animator.won and event_type != "conversation.item.input_audio_transcription.completed":
+                    continue
+                if event_type == "input_audio_buffer.speech_started":
+                    if not runtime.user_talking:
+                        runtime.user_talking = True
+                        await runtime.interrupt(new_turn=True)
+                elif event_type == "input_audio_buffer.speech_stopped":
+                    runtime.user_talking = False
+                elif event_type == "input_audio_buffer.committed":
+                    runtime.user_talking = False
+                    runtime.queue_user(None)
+                elif event_type == "conversation.item.input_audio_transcription.completed":
+                    transcript = event.get("transcript", "")
+                    animator.add_transcript("You", transcript, event.get("item_id"))
+                    print(f"\nYou: {transcript}")
+                elif event_type == "error":
+                    error = event.get("error", {})
+                    if _is_inactive_cancellation(error):
+                        continue
+                    if error.get("event_id") in runtime.truncate_events and error.get("code") in (
+                        "unsupported_event", "unknown_event_type", "invalid_event",
+                        "conversation_item_truncate_not_supported",
+                    ):
+                        runtime.truncate_supported = False
+                        print("Server does not support heard-audio truncation.")
+                        continue
+                    raise RealtimeSessionError(f"Realtime API error: {error.get('message', error)}")
+                else:
+                    runtime.handle(event)
+            if not stop.is_set():
+                raise ConnectionError("The patient connection closed unexpectedly")
+
+        tasks = {
+            asyncio.create_task(send_text_messages()),
+            asyncio.create_task(receive_events()),
+            asyncio.create_task(stop.wait()),
+            asyncio.create_task(runtime.playback.run()),
+            asyncio.create_task(runtime.finish_responses()),
+            asyncio.create_task(runtime.send_user_requests()),
+            asyncio.create_task(runtime.process_speech()),
+            asyncio.create_task(watch_push_to_talk()),
+            asyncio.create_task(finish_consultation()),
+        }
+        if input_stream is not None:
+            tasks.add(asyncio.create_task(send_microphone_audio()))
+        try:
+            done, _ = await asyncio.wait(tasks | {microphone_error}, return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                task.result()
+        finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
 
 
 async def _run_conversation(
@@ -2190,6 +2268,7 @@ async def _run_conversation(
     window: pygame.Surface | None = None,
     screen: pygame.Surface | None = None,
     on_skill_score: Callable[[int], None] | None = None,
+    performance_profile: PerformanceProfile | None = None,
 ) -> ConversationResult:
     sign_in = False
     while True:
@@ -2197,13 +2276,14 @@ async def _run_conversation(
         animator._ready = False
         stop = asyncio.Event()
         animation = asyncio.create_task(animator.run(stop))
-        session = asyncio.create_task(_conversation_session(system_prompt, disease, patient_index, tests, animator, stop, sign_in=sign_in))
+        profile_options = {"performance_profile": performance_profile} if performance_profile is not None else {}
+        session = asyncio.create_task(_conversation_session(system_prompt, disease, patient_index, tests, animator, stop, sign_in=sign_in, **profile_options))
         try:
             done, pending = await asyncio.wait({animation, session}, return_when=asyncio.FIRST_COMPLETED)
             if session in done:
                 try:
                     session.result()
-                except (AzureError, WebSocketException, OSError, TimeoutError, sd.PortAudioError, RealtimeSessionError) as error:
+                except (AzureError, WebSocketException, OSError, TimeoutError, sd.PortAudioError, RealtimeSessionError, AudioPlaybackError) as error:
                     print(f"Consultation unavailable: {error}")
                     if not animator.won and not stop.is_set():
                         animator.close_test_result()
@@ -2213,6 +2293,8 @@ async def _run_conversation(
                             animator.show_sign_in(
                                 "Azure denied access. Sign in with an authorized account, or ask the resource owner for access."
                             )
+                        elif isinstance(error, (AudioPlaybackError, sd.PortAudioError)):
+                            animator.show_audio_error(str(error))
                         else:
                             animator.show_error("Check the network and audio output, then retry.")
                         await animation
@@ -2239,6 +2321,7 @@ async def _run_conversation(
             for task in (session, animation):
                 task.cancel()
             await asyncio.gather(session, animation, return_exceptions=True)
+            await animator._pokedex.shutdown()
             animator.close()
 
 
@@ -2251,6 +2334,7 @@ def start_consultation(
     window: pygame.Surface | None = None,
     screen: pygame.Surface | None = None,
     on_skill_score: Callable[[int], None] | None = None,
+    performance_profile: PerformanceProfile | None = None,
 ) -> ConversationResult:
     try:
         return asyncio.run(
@@ -2262,6 +2346,7 @@ def start_consultation(
                 window=window,
                 screen=screen,
                 on_skill_score=on_skill_score,
+                performance_profile=performance_profile,
             )
         )
     except KeyboardInterrupt:
@@ -2277,9 +2362,18 @@ def strat_conversation(
     *,
     window: pygame.Surface | None = None,
     screen: pygame.Surface | None = None,
+    performance_profile: PerformanceProfile | None = None,
 ) -> bool:
     """Start a patient conversation with diagnostic tools and result popups."""
-    return start_consultation(system_prompts, disease, patient_type, tests, window=window, screen=screen) in (ConversationResult.SOLVED, ConversationResult.SOLVED_QUIT)
+    return start_consultation(
+        system_prompts,
+        disease,
+        patient_type,
+        tests,
+        window=window,
+        screen=screen,
+        performance_profile=performance_profile,
+    ) in (ConversationResult.SOLVED, ConversationResult.SOLVED_QUIT)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,2 @@
+# Offline auditions can still use their own isolated environment.
+-r requirements-voice.txt
