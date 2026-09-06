@@ -5,8 +5,7 @@
 Install dependencies with:
     python -m pip install azure-identity pygame sounddevice websockets
 
-Authenticate before running with:
-    az login
+Sign in from the game when prompted, or authenticate beforehand with az login.
 """
 
 from __future__ import annotations
@@ -30,9 +29,9 @@ import pygame
 import sounddevice as sd
 import websockets
 from azure.core.exceptions import AzureError
-from azure.identity.aio import AzureCliCredential
-from websockets.exceptions import WebSocketException
+from websockets.exceptions import InvalidStatus, WebSocketException
 
+from src.azure_auth import AzureSignInRequired, GameCredential
 from src.game_ui import ChoiceMenu, wrap_text
 
 REALTIME_URL = (
@@ -596,6 +595,7 @@ class PatientAnimator:
         self._running = True
         self.quit_requested = False
         self.retry_requested = False
+        self.sign_in_requested = False
         self._ready = True
         self._sending = False
         self._sent_until = 0.0
@@ -724,6 +724,15 @@ class PatientAnimator:
         self._ready = False
         self._set_text_focus(False)
         self._menu = ChoiceMenu("CONNECTION UNAVAILABLE", ("Retry", "Return to Hospital"), message)
+
+    def show_sign_in(self, message: str, *, pending: bool = False) -> None:
+        self._ready = False
+        self._set_text_focus(False)
+        self._menu = ChoiceMenu(
+            "SIGNING IN TO AZURE" if pending else "AZURE SIGN-IN REQUIRED",
+            ("Return to Hospital",) if pending else ("Sign in to Azure", "Return to Hospital"),
+            message,
+        )
 
     def _draw_transcript(self) -> None:
         area = pygame.Rect(0, 290, 480, 84)
@@ -1227,8 +1236,9 @@ class PatientAnimator:
                 choice = "Keep Consulting"
             if choice == "Keep Consulting":
                 self._menu = None
-            elif choice in ("Return to Hospital", "Retry"):
-                self.retry_requested = choice == "Retry"
+            elif choice in ("Return to Hospital", "Retry", "Sign in to Azure"):
+                self.sign_in_requested = choice == "Sign in to Azure"
+                self.retry_requested = choice in ("Retry", "Sign in to Azure")
                 self._running = False
                 stop.set()
             return
@@ -1286,11 +1296,20 @@ async def _conversation_session(
     tests: Sequence[Test],
     animator: PatientAnimator,
     stop: asyncio.Event,
+    *,
+    sign_in: bool = False,
 ) -> bool:
-    credential = AzureCliCredential(process_timeout=15)
+    credential = GameCredential(sign_in=sign_in)
     test_tools, tests_by_tool = _test_tools(tests)
     try:
+        if sign_in:
+            animator.show_sign_in(
+                "Finish Microsoft sign-in in your browser. This consultation will continue automatically.",
+                pending=True,
+            )
         token = await credential.get_token(AZURE_OPENAI_SCOPE)
+        if sign_in:
+            animator._menu = None
         headers = {"Authorization": f"Bearer {token.token}"}
 
         async with _realtime_connection(headers) as websocket:
@@ -1582,12 +1601,13 @@ async def _run_conversation(
     window: pygame.Surface | None = None,
     screen: pygame.Surface | None = None,
 ) -> ConversationResult:
+    sign_in = False
     while True:
         animator = PatientAnimator(patient_index, window=window, screen=screen)
         animator._ready = False
         stop = asyncio.Event()
         animation = asyncio.create_task(animator.run(stop))
-        session = asyncio.create_task(_conversation_session(system_prompt, disease, patient_index, tests, animator, stop))
+        session = asyncio.create_task(_conversation_session(system_prompt, disease, patient_index, tests, animator, stop, sign_in=sign_in))
         try:
             done, pending = await asyncio.wait({animation, session}, return_when=asyncio.FIRST_COMPLETED)
             if session in done:
@@ -1597,7 +1617,14 @@ async def _run_conversation(
                     print(f"Consultation unavailable: {error}")
                     if not animator.won and not stop.is_set():
                         animator.close_test_result()
-                        animator.show_error("Check Azure sign-in, network and audio output, then retry.")
+                        if isinstance(error, AzureSignInRequired):
+                            animator.show_sign_in(str(error))
+                        elif isinstance(error, InvalidStatus) and error.response.status_code in (401, 403):
+                            animator.show_sign_in(
+                                "Azure denied access. Sign in with an authorized account, or ask the resource owner for access."
+                            )
+                        else:
+                            animator.show_error("Check the network and audio output, then retry.")
                         await animation
             if animation in done:
                 animation.result()
@@ -1607,6 +1634,7 @@ async def _run_conversation(
                 return ConversationResult.SOLVED
             if not animator.retry_requested:
                 return ConversationResult.RETURNED
+            sign_in = animator.sign_in_requested
         finally:
             stop.set()
             animator._push_to_talk.clear()

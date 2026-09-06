@@ -6,7 +6,7 @@ A voice-driven diagnostic game powered by the Azure OpenAI Realtime API. Play as
 
 - Python 3.10 or newer
 - An Azure account with access to the configured Azure OpenAI Realtime deployment
-- Azure CLI authentication
+- A Microsoft work or school account with access to the Azure OpenAI resource
 - A working audio output device; microphone optional (typing is supported)
 
 ## Setup
@@ -19,11 +19,28 @@ source .venv/bin/activate
 python -m pip install -r requirements.txt
 ```
 
-Authenticate with Azure:
+When a consultation needs authentication, select **Sign in to Azure** in the
+game. Complete Microsoft sign-in in the browser; the consultation continues
+automatically. Azure CLI is not required for this flow.
+
+Alternatively, if you have Azure CLI installed, authenticate before launching:
 
 ```bash
 az login
 ```
+
+Browser sign-in stays responsive and can be cancelled with **Return to Hospital**
+or by closing the game. An abandoned sign-in times out after about three minutes
+and can be retried. Tokens are held only in memory and reused between patients
+until they approach expiry; restarting the game may require signing in again.
+No passwords or tokens are written to game saves or logs.
+
+Use an account with the **Cognitive Services OpenAI User** role (or equivalent
+permissions) on the configured resource. Signing in does not grant resource
+access: if Azure denies access, use another authorized account or ask the resource
+owner to grant the required role. This development game uses the Azure Identity
+SDK's default development application for browser sign-in; production deployments
+should use their own registered Microsoft Entra application.
 
 ## Run
 
@@ -67,8 +84,9 @@ During a diagnosis battle:
 
 The hospital pauses when the window loses focus. A live consultation is not
 paused: losing focus releases push-to-talk, while returning to the hospital
-cancels the unfinished case. Connection failures offer Retry or Return to
-Hospital. Retrying starts a new consultation, not a recovered conversation.
+cancels the unfinished case. Authentication failures offer Sign in to Azure or
+Return to Hospital; other connection failures offer Retry or Return to Hospital.
+Retrying starts a new consultation, not a recovered conversation.
 
 ## Saved Progress
 
