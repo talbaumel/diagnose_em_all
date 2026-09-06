@@ -15,7 +15,7 @@ from src.azure_auth import AzureSignInRequired
 from src.game_ui import wrap_text
 from src.care_plan import Prescription, Referral
 from src.consultation_review import AxisScore, ConsultationScorecard, SCORE_AXES
-from src.realtime_conversation import ConversationResult, PatientAnimator, PatientType, Test, _conversation_session, _diagnosis_matches, _run_conversation, _show_consultation_review, strat_conversation
+from src.realtime_conversation import CONSULTATION_PLAYER_DIRECTION_ROW, ConversationResult, PatientAnimator, PatientType, Test, _conversation_session, _diagnosis_matches, _run_conversation, _show_consultation_review, strat_conversation
 
 
 class ConversationUITests(unittest.TestCase):
@@ -39,6 +39,20 @@ class ConversationUITests(unittest.TestCase):
 
     def key(self, value):
         self.animator.handle_event(pygame.event.Event(pygame.KEYDOWN, key=value), self.stop)
+
+    def test_dr_ash_faces_patient_during_consultation(self):
+        self.assertEqual(CONSULTATION_PLAYER_DIRECTION_ROW, 2)
+        self.assertIs(self.animator._player_frames[0], self.animator._player_frames[1])
+
+    def test_loading_spinners_follow_dragon_and_review_wait_states(self):
+        with patch("src.pokedex_ui.PokedexPanel.busy", new_callable=unittest.mock.PropertyMock, return_value=True), patch("src.pokedex_ui.draw_spinner") as dragon_spinner:
+            self.animator._pokedex.draw(self.animator._screen)
+        dragon_spinner.assert_called_once()
+
+        self.animator._review_loading = True
+        with patch("src.realtime_conversation.draw_spinner") as review_spinner:
+            self.animator._draw_review()
+        review_spinner.assert_called_once()
 
     def test_review_shows_numerical_overview_before_feedback(self):
         self.animator._available_test_count = 8
@@ -71,6 +85,73 @@ class ConversationUITests(unittest.TestCase):
                 texts = [call.args[0] for call in wrapped.call_args_list]
                 self.assertIn("Tests discovered: 0/8", texts)
                 self.assertIn(f"Clinical knowledge: {expected}", texts)
+
+    def test_pokedex_toolbar_leaves_room_for_patient_speaking(self):
+        self.assertLessEqual(self.animator._pokedex_button.right, 462)
+        self.assertFalse(self.animator._pokedex_button.colliderect(self.animator._care_button))
+        self.assertLess(self.animator._text_send_button.bottom, 461)
+        self.assertLess(self.animator._text_input_rect.bottom, 461)
+        for button, label in ((self.animator._diagnose_button, "FINISH VISIT"), (self.animator._care_button, "CARE PLAN"), (self.animator._pokedex_button, "Dragon Copilot")):
+            self.assertLessEqual(self.animator._status_font.size(label)[0] + 16, button.width)
+
+    def test_dragon_copilot_opens_and_closes_by_click_at_scaled_sizes(self):
+        self.addCleanup(pygame.display.set_mode, self.window.get_size())
+        for size in (480, 720, 960):
+            self.window = pygame.display.set_mode((size, size))
+            self.animator._window = self.window
+            for button in (self.animator._pokedex_button, self.animator._pokedex.close_button):
+                position = tuple(round(coordinate * size / 480) for coordinate in button.center)
+                self.animator.handle_event(pygame.event.Event(pygame.MOUSEBUTTONUP, button=1, pos=position), self.stop)
+                self.assertEqual(self.animator._pokedex.open, button == self.animator._pokedex_button)
+            self.assertFalse(self.stop.is_set())
+
+    def test_pokedex_isolates_chat_and_restores_patient_draft(self):
+        self.animator._text_input = "Patient draft"
+        self.animator._set_text_focus(True)
+        self.key(pygame.K_F6)
+        self.assertTrue(self.animator._pokedex.open)
+        self.animator.handle_event(pygame.event.Event(pygame.TEXTINPUT, text="Help me"), self.stop)
+        self.key(pygame.K_LSHIFT)
+        self.animator._submit_text()
+        self.animator._open_diagnosis()
+        self.animator._open_care_menu()
+        self.assertFalse(self.animator.push_to_talk)
+        self.assertFalse(self.animator._diagnosis_open)
+        self.assertIsNone(self.animator._menu)
+        self.assertTrue(self.animator._text_messages.empty())
+        self.assertEqual(self.animator._pokedex.draft, "Help me")
+        self.key(pygame.K_ESCAPE)
+        self.assertFalse(self.stop.is_set())
+        self.assertTrue(self.animator._text_focused)
+        self.assertEqual(self.animator._text_input, "Patient draft")
+
+    def test_pokedex_context_only_contains_observed_visit(self):
+        self.animator.add_transcript("Patient", "My throat hurts.")
+        self.animator.add_transcript("Case", "Hidden case feedback")
+        self.animator.metrics.discover_test("Throat", "Mild redness")
+        self.animator.metrics.discover_test("Temperature", "data/sprites/tests/thermometer.png")
+        self.animator.metrics.care_plan.add(Referral("Clinic", "Assessment", "Routine"))
+        context = self.animator._pokedex_context()
+        encoded = json.dumps(context)
+        self.assertIn("My throat hurts.", encoded)
+        self.assertIn("Mild redness", encoded)
+        self.assertIn("Clinic", encoded)
+        self.assertNotIn("common cold", encoded)
+        self.assertNotIn("Hidden case feedback", encoded)
+        self.assertNotIn("thermometer.png", encoded)
+        self.assertEqual(len(context["discovered_tests"]), 2)
+
+    def test_pokedex_evidence_and_focus_loss_priority(self):
+        self.key(pygame.K_F6)
+        self.animator.handle_event(pygame.event.Event(pygame.WINDOWFOCUSLOST), self.stop)
+        self.assertFalse(self.animator._pokedex.focused)
+        self.animator.show_test_result(Test("Throat", "Mild redness"))
+        self.key(pygame.K_ESCAPE)
+        self.assertFalse(self.animator.evidence_open)
+        self.assertTrue(self.animator._pokedex.open)
+        self.assertTrue(self.animator._pokedex.focused)
+        self.animator.show_error("offline")
+        self.assertFalse(self.animator._pokedex.open)
 
     def test_evidence_blocks_text_and_microphone(self):
         self.animator._text_input = "do not send"

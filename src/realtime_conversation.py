@@ -20,7 +20,7 @@ import time
 from collections import deque
 from collections.abc import AsyncIterator, Iterator, Sequence
 from contextlib import asynccontextmanager, contextmanager
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -33,10 +33,12 @@ from azure.core.credentials import AccessToken
 from azure.core.exceptions import AzureError
 from websockets.exceptions import InvalidStatus, WebSocketException
 
+from src.animation_assets import load_atlas
 from src.azure_auth import AzureSignInRequired, GameCredential, clear_cached_token
-from src.game_ui import ChoiceMenu, wrap_text
+from src.game_ui import ChoiceMenu, draw_spinner, wrap_text
 from src.care_plan import Prescription, Referral
 from src.care_plan_ui import CareOrderForm
+from src.pokedex_ui import PokedexPanel
 from src.consultation_review import (
     REVIEW_TIMEOUT_SECONDS,
     SCORE_AXES,
@@ -63,7 +65,9 @@ RELIEVED_DURATION_SECONDS = 5
 PROJECT_ROOT = Path(__file__).parents[1]
 PATIENT_SPRITES_DIR = PROJECT_ROOT / "data" / "sprites" / "patients"
 PLAYER_SPRITE_SHEET = PROJECT_ROOT / "data" / "sprites" / "players" / "dr_ash.png"
+PLAYER_IDLE_SPRITE_SHEET = PLAYER_SPRITE_SHEET.with_name("dr_ash_idle_atlas.png")
 PLAYER_FRAME_SIZE = (128, 200)
+CONSULTATION_PLAYER_DIRECTION_ROW = 2
 CONSULTATION_CHARACTER_HEIGHT = 124
 HOSPITAL_MAP_IMAGE = (
     PROJECT_ROOT / "data" / "sprites" / "world" / "hospital_floor.png"
@@ -555,42 +559,19 @@ class PatientAnimator:
             )
             for state, frames in raw_patient_frames.items()
         }
-        self._player_sheet = pygame.image.load(str(PLAYER_SPRITE_SHEET)).convert_alpha()
-        raw_player_frames = {
-            row: tuple(
-                extract_character(
-                    self._player_sheet.subsurface(
-                        pygame.Rect(
-                            frame_index * PLAYER_FRAME_SIZE[0],
-                            row * PLAYER_FRAME_SIZE[1],
-                            *PLAYER_FRAME_SIZE,
-                        )
-                    ).copy()
-                )
-                for frame_index in range(4)
-            )
-            for row in range(2)
-        }
+        facing_patient_frames = load_atlas(PLAYER_IDLE_SPRITE_SHEET, 4)[
+            CONSULTATION_PLAYER_DIRECTION_ROW
+        ]
         player_source_size = (
-            max(
-                frame.get_width()
-                for frames in raw_player_frames.values()
-                for frame in frames
-            ),
-            max(
-                frame.get_height()
-                for frames in raw_player_frames.values()
-                for frame in frames
-            ),
+            max(frame.get_width() for frame in facing_patient_frames),
+            max(frame.get_height() for frame in facing_patient_frames),
         )
-        self._player_frames = {
-            row: normalize_character_frames(
-                frames,
-                CONSULTATION_CHARACTER_HEIGHT,
-                player_source_size,
-            )
-            for row, frames in raw_player_frames.items()
-        }
+        normalized_player_frames = normalize_character_frames(
+            facing_patient_frames,
+            CONSULTATION_CHARACTER_HEIGHT,
+            player_source_size,
+        )
+        self._player_frames = {row: normalized_player_frames for row in range(2)}
         consultation_room = pygame.image.load(
             str(CONSULTATION_ROOM_IMAGE)
         ).convert()
@@ -638,8 +619,11 @@ class PatientAnimator:
         self._diagnosis_feedback = ""
         self._diagnosis_focus = 0
         self._chat_was_focused = False
-        self._diagnose_button = pygame.Rect(18, 384, 124, 28)
-        self._care_button = pygame.Rect(154, 384, 124, 28)
+        self._diagnose_button = pygame.Rect(18, 384, 100, 28)
+        self._care_button = pygame.Rect(126, 384, 100, 28)
+        self._pokedex_button = pygame.Rect(234, 384, 228, 28)
+        self._pokedex = PokedexPanel()
+        self._pokedex_chat_was_focused = False
         self._care_form: CareOrderForm | None = None
         self._care_chat_was_focused = False
         self._diagnosis_input_rect = pygame.Rect(48, 178, 384, 40)
@@ -664,8 +648,8 @@ class PatientAnimator:
         self._text_messages: asyncio.Queue[str] = asyncio.Queue()
         self._text_input = ""
         self._text_focused = False
-        self._text_input_rect = pygame.Rect(18, 424, 386, 40)
-        self._text_send_button = pygame.Rect(414, 424, 48, 40)
+        self._text_input_rect = pygame.Rect(18, 418, 386, 40)
+        self._text_send_button = pygame.Rect(414, 418, 48, 40)
         self._eyebrow_font = pygame.font.SysFont("Avenir Next", 10, bold=True)
         self._case_font = pygame.font.SysFont("Avenir Next", 16, bold=True)
         self._status_font = pygame.font.SysFont("Avenir Next", 11, bold=True)
@@ -683,7 +667,7 @@ class PatientAnimator:
 
     @property
     def push_to_talk(self) -> bool:
-        return self._push_to_talk.is_set() and not self._diagnosis_open and self._care_form is None
+        return self._push_to_talk.is_set() and not self._diagnosis_open and self._care_form is None and not self._pokedex.open
 
     @property
     def won(self) -> bool:
@@ -708,6 +692,7 @@ class PatientAnimator:
         self._relieved_until = time.monotonic() + RELIEVED_DURATION_SECONDS
 
     def show_win(self) -> None:
+        self._pokedex.hide()
         self.metrics.finish()
         self._won = True
         self._diagnosis_open = False
@@ -731,6 +716,8 @@ class PatientAnimator:
             self.add_transcript("Case", self._diagnosis_feedback)
 
     def _open_diagnosis(self) -> None:
+        if self._pokedex.open:
+            return
         if not self._ready or self.won or self.evidence_open or self._menu is not None or self._disease is None or self._care_form is not None:
             return
         if self._diagnosis_confirmed.is_set():
@@ -756,6 +743,8 @@ class PatientAnimator:
         self._set_text_focus(self._chat_was_focused)
 
     def _finish_consultation(self) -> None:
+        if self._pokedex.open:
+            return
         if not self._ready or self.won or not self._diagnosis_confirmed.is_set() or self.evidence_open or self._diagnosis_open or self._care_form is not None:
             return
         if self._sending or not self._text_messages.empty():
@@ -765,12 +754,35 @@ class PatientAnimator:
         self._consultation_finished.set()
 
     def _open_care_menu(self) -> None:
+        if self._pokedex.open:
+            return
         if not self._ready or self.won or self.evidence_open or self._diagnosis_open or self._menu is not None or self._care_form is not None:
             return
         self._care_chat_was_focused = self._text_focused
         self._set_text_focus(False)
         plan = self.metrics.care_plan
         self._menu = ChoiceMenu("CARE PLAN", ("Add Prescription", "Add Referral", "Review Orders", "Keep Consulting"), f"{len(plan.prescriptions)} prescriptions / {len(plan.referrals)} referrals")
+
+    def _open_pokedex(self) -> None:
+        if not self._ready or self.won or self.evidence_open or self._diagnosis_open or self._menu is not None or self._care_form is not None or self._pokedex.open:
+            return
+        self._pokedex_chat_was_focused = self._text_focused
+        self._set_text_focus(False)
+        self._pokedex.show()
+
+    def _pokedex_context(self) -> dict:
+        return {
+            "transcript": [
+                {"speaker": speaker, "text": text}
+                for speaker, text in self._transcript
+                if speaker in ("You", "Patient")
+            ],
+            "discovered_tests": [
+                {"name": name, "result": "Image finding not provided to HAS." if Path(result).suffix.lower() in IMAGE_SUFFIXES else result}
+                for name, result in self.metrics.discovered_tests.items()
+            ],
+            "care_plan": asdict(self.metrics.care_plan),
+        }
 
     def _record_care_order(self, order: Prescription | Referral) -> None:
         if not self.metrics.care_plan.add(order):
@@ -782,6 +794,8 @@ class PatientAnimator:
         self._sending = True
 
     def show_test_result(self, test: Test) -> None:
+        if self._pokedex.open:
+            self._pokedex.focus(False)
         self._diagnosis_open = False
         self._set_text_focus(False)
         self._evidence_scroll = 0
@@ -815,6 +829,8 @@ class PatientAnimator:
         return await self._text_messages.get()
 
     def _submit_text(self) -> None:
+        if self._pokedex.open:
+            return
         if not self._ready or self.evidence_open or self.won or self._menu is not None or self._diagnosis_open or self._care_form is not None:
             return
         message = self._text_input.strip()
@@ -847,6 +863,7 @@ class PatientAnimator:
             self._transcript_scroll = max(0, self._transcript_scroll + len(self._transcript_lines) - previous_line_count)
 
     def show_error(self, message: str) -> None:
+        self._pokedex.hide()
         self._ready = False
         self._care_form = None
         self._diagnosis_open = False
@@ -854,6 +871,7 @@ class PatientAnimator:
         self._menu = ChoiceMenu("CONNECTION UNAVAILABLE", ("Retry", "Return to Hospital"), message)
 
     def show_sign_in(self, message: str, *, pending: bool = False) -> None:
+        self._pokedex.hide()
         self._ready = False
         self._set_text_focus(False)
         self._menu = ChoiceMenu(
@@ -880,6 +898,7 @@ class PatientAnimator:
             pygame.draw.rect(self._screen, UI_TEAL, (468, 300 + round(48 * fraction), 3, 16))
 
     def _set_text_focus(self, focused: bool) -> None:
+        focused = focused and not self._pokedex.open
         self._text_focused = focused
         self._push_to_talk.clear()
         if focused:
@@ -893,6 +912,8 @@ class PatientAnimator:
         self._evidence_closed.set()
         if self._care_form is not None:
             self._care_form.focus(self._care_form.focus_index)
+        if self._pokedex.open:
+            self._pokedex.focus(True)
 
     def _current_state(self) -> str:
         if time.monotonic() < self._relieved_until:
@@ -1079,11 +1100,22 @@ class PatientAnimator:
         pygame.draw.rect(self._screen, UI_TEAL if enabled else (91, 119, 116), self._care_button, border_radius=5)
         care_label = self._status_font.render("CARE PLAN", True, UI_WHITE)
         self._screen.blit(care_label, care_label.get_rect(center=self._care_button.center))
+        helper_enabled = self._ready and not self.won
+        helper_hovered = self._pokedex_button.collidepoint(self._screen_position(pygame.mouse.get_pos()))
+        helper_color = UI_WHITE if helper_hovered else UI_PAPER
+        pygame.draw.rect(self._screen, helper_color if helper_enabled else (193, 211, 207), self._pokedex_button, border_radius=5)
+        pygame.draw.rect(self._screen, UI_TEAL, self._pokedex_button, width=1, border_radius=5)
+        pokedex_label = self._status_font.render("Dragon Copilot", True, UI_INK)
+        brand_width = pokedex_label.get_width() + 32
+        brand_x = self._pokedex_button.centerx - brand_width // 2
+        if self._pokedex.button_logo is not None:
+            self._screen.blit(self._pokedex.button_logo, (brand_x, self._pokedex_button.y + 2))
+        self._screen.blit(pokedex_label, pokedex_label.get_rect(midleft=(brand_x + 32, self._pokedex_button.centery)))
         status_text, status_color = self._status(state)
         compact_status = self._status_font.render(status_text, True, status_color)
         status_x = 462 - compact_status.get_width()
-        pygame.draw.circle(self._screen, status_color, (status_x - 10, 397), 3)
-        self._screen.blit(compact_status, (status_x, 390))
+        pygame.draw.circle(self._screen, status_color, (status_x - 10, 468), 3)
+        self._screen.blit(compact_status, (status_x, 461))
 
         input_border = UI_CORAL if self._text_focused else (91, 119, 116)
         pygame.draw.rect(
@@ -1446,7 +1478,11 @@ class PatientAnimator:
         pygame.draw.rect(self._screen, button_color, self._review_return_button, border_radius=5)
         button_text = "Scoring..." if self._review_loading else "Return to Hospital"
         label = self._text_font.render(button_text, True, UI_WHITE)
-        self._screen.blit(label, label.get_rect(center=self._review_return_button.center))
+        label_rect = label.get_rect(center=self._review_return_button.center)
+        if self._review_loading:
+            label_rect.centerx += 10
+            draw_spinner(self._screen, (label_rect.left - 14, label_rect.centery), 7, UI_WHITE)
+        self._screen.blit(label, label_rect)
 
     def _handle_review_event(self, event: pygame.event.Event, stop: asyncio.Event) -> None:
         key = event.key if event.type == pygame.KEYDOWN else None
@@ -1491,12 +1527,15 @@ class PatientAnimator:
         self._draw_scene_fade()
         if self._menu is not None and not self.evidence_open and not self.won:
             self._menu.draw(self._screen)
+        if self._pokedex.open and not self.evidence_open and not self.won:
+            self._pokedex.draw(self._screen)
 
         pygame.transform.scale(self._screen, self._window.get_size(), self._window)
         pygame.display.flip()
 
     def handle_event(self, event: pygame.event.Event, stop: asyncio.Event) -> None:
         if event.type == pygame.QUIT:
+            self._pokedex.hide()
             self.quit_requested = True
             self._running = False
             self._push_to_talk.clear()
@@ -1504,6 +1543,8 @@ class PatientAnimator:
             return
         if event.type == pygame.WINDOWFOCUSLOST:
             self._set_text_focus(False)
+            if self._pokedex.open:
+                self._pokedex.focus(False)
             if self._care_form is not None:
                 self._care_form.focus(-1)
             if self._diagnosis_open:
@@ -1564,6 +1605,12 @@ class PatientAnimator:
         if self._diagnosis_open:
             self._handle_diagnosis_event(event)
             return
+        if self._pokedex.open:
+            position = self._screen_position(event.pos) if clicked else (-1, -1)
+            self._pokedex.handle_event(event, position, self._pokedex_context())
+            if not self._pokedex.open:
+                self._set_text_focus(self._pokedex_chat_was_focused)
+            return
         if key == pygame.K_ESCAPE:
             if self._text_focused:
                 self._set_text_focus(False)
@@ -1579,6 +1626,8 @@ class PatientAnimator:
             self._show_discovered_tests()
         elif key == pygame.K_F4:
             self._open_care_menu()
+        elif key == pygame.K_F6:
+            self._open_pokedex()
         elif event.type == pygame.MOUSEWHEEL:
             self._transcript_scroll = max(0, self._transcript_scroll + event.y * 2)
         elif key in (pygame.K_PAGEUP, pygame.K_PAGEDOWN):
@@ -1600,6 +1649,8 @@ class PatientAnimator:
                 self._open_diagnosis()
             elif self._care_button.collidepoint(position):
                 self._open_care_menu()
+            elif self._pokedex_button.collidepoint(position):
+                self._open_pokedex()
             elif self._discovered_tests_button.collidepoint(position):
                 self._show_discovered_tests()
             elif self._text_send_button.collidepoint(position):
@@ -1618,6 +1669,7 @@ class PatientAnimator:
         stop.set()
 
     def close(self) -> None:
+        self._pokedex.hide()
         pygame.key.stop_text_input()
         if self._owns_display:
             pygame.quit()
@@ -2020,6 +2072,7 @@ async def _run_conversation(
             for task in (session, animation):
                 task.cancel()
             await asyncio.gather(session, animation, return_exceptions=True)
+            await animator._pokedex.shutdown()
             animator.close()
 
 
