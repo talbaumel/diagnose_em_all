@@ -2,12 +2,24 @@ from __future__ import annotations
 
 import unittest
 import tempfile
+from collections import defaultdict
 from pathlib import Path
 from unittest.mock import patch
 
 import pygame
 
-from src.hospital_game import HospitalNavigator, PLAYER_SPEED, PLAYER_START, HOSPITAL_ROOMS, load_patient_scenarios, start_hospital_game
+from src.hospital_game import (
+    HospitalNavigator,
+    PLAYER_DANCES,
+    PLAYER_DANCE_FPS,
+    PLAYER_JUMP_HEIGHT,
+    PLAYER_JUMP_SECONDS,
+    PLAYER_SPEED,
+    PLAYER_START,
+    HOSPITAL_ROOMS,
+    load_patient_scenarios,
+    start_hospital_game,
+)
 from src.game_ui import ChoiceMenu
 from src.game_progress import Progress, ProgressStore
 from src.realtime_conversation import ConversationResult
@@ -20,6 +32,11 @@ class MovementTests(unittest.TestCase):
         navigator._scenarios = ()
         navigator._diagnosed = set()
         navigator._walking = False
+        navigator._dance_index = None
+        navigator._dance_time = 0.0
+        navigator._crouching = False
+        navigator._crawl_distance = 0.0
+        navigator._jump_time = None
         navigator._facing = "down"
         navigator._animation_time = 0.0
         navigator._walk_time = 0.0
@@ -55,6 +72,183 @@ class MovementTests(unittest.TestCase):
         navigator._walking = True
         navigator.move(pygame.Vector2(), 0.05)
         self.assertFalse(navigator._walking)
+
+    def test_dance_cycles_in_place_and_restarts_each_animation(self):
+        navigator = self.navigator()
+        navigator._player_dance_frames = tuple(
+            {"down": tuple(pygame.Surface((1, 1)) for _ in range(4))}
+            for _ in PLAYER_DANCES
+        )
+        frames = navigator._player_dance_frames[0]["down"]
+        navigator._walking = True
+        navigator._walk_time = 2
+        navigator._walk_distance = 40
+        navigator._cycle_dance()
+        self.assertTrue(navigator._dancing)
+        self.assertFalse(navigator._walking)
+        self.assertEqual(navigator._walk_time, 0)
+        self.assertEqual(navigator._walk_distance, 0)
+        self.assertIs(navigator._player_frame(0), frames[0])
+        navigator.update(pygame.Vector2(), 1 / PLAYER_DANCE_FPS)
+        self.assertEqual(navigator.player_position, PLAYER_START)
+        self.assertIs(navigator._player_frame(0), frames[1])
+        navigator.update(pygame.Vector2(), 3 / PLAYER_DANCE_FPS)
+        self.assertIs(navigator._player_frame(0), frames[0])
+        for index in range(1, len(PLAYER_DANCES)):
+            navigator._cycle_dance()
+            self.assertEqual(navigator._dance_index, index)
+            self.assertEqual(navigator._dance_time, 0)
+            self.assertIs(navigator._player_frame(0), navigator._player_dance_frames[index]["down"][0])
+            navigator.update(pygame.Vector2(), 0.2)
+        navigator._cycle_dance()
+        self.assertFalse(navigator._dancing)
+        navigator._cycle_dance()
+        self.assertEqual(navigator._dance_time, 0)
+        self.assertIs(navigator._player_frame(0), frames[0])
+
+    def test_movement_cancels_dance_even_at_a_wall(self):
+        for position in (PLAYER_START, (16, 470)):
+            with self.subTest(position=position):
+                navigator = self.navigator(position)
+                navigator._cycle_dance()
+                navigator.update(pygame.Vector2(-1, 0), 0.05)
+                self.assertFalse(navigator._dancing)
+                self.assertEqual(navigator._dance_time, 0)
+                self.assertEqual(navigator._facing, "left")
+
+    def test_crouching_cancels_dance_and_crawls_until_released(self):
+        navigator = self.navigator()
+        navigator._cycle_dance()
+        navigator.update(pygame.Vector2(1, 0), 0.05, crouching=True)
+        self.assertTrue(navigator._crouching)
+        self.assertFalse(navigator._dancing)
+        self.assertTrue(navigator._walking)
+        self.assertAlmostEqual(navigator.player_position[0], PLAYER_START[0] + PLAYER_SPEED * 0.5 * 0.05)
+        navigator._cycle_dance()
+        self.assertFalse(navigator._dancing)
+        before_release = navigator._player_position.copy()
+        navigator.update(pygame.Vector2(1, 0), 0.05)
+        self.assertFalse(navigator._crouching)
+        self.assertTrue(navigator._walking)
+        self.assertAlmostEqual(navigator._player_position.distance_to(before_release), PLAYER_SPEED * 0.05)
+
+    def test_crawl_speed_is_half_walking_speed_in_every_direction(self):
+        for direction in ((1, 0), (-1, 0), (0, 1), (0, -1), (1, 1)):
+            with self.subTest(direction=direction):
+                navigator = self.navigator()
+                navigator.update(pygame.Vector2(direction), 0.05, crouching=True)
+                self.assertAlmostEqual(
+                    navigator._player_position.distance_to(PLAYER_START),
+                    PLAYER_SPEED * 0.5 * 0.05,
+                )
+                self.assertTrue(navigator._crouching)
+                self.assertTrue(navigator._walking)
+                position = navigator.player_position
+                navigator.update(pygame.Vector2(), 0.05, crouching=True)
+                self.assertEqual(navigator.player_position, position)
+                self.assertFalse(navigator._walking)
+                self.assertTrue(navigator._crouching)
+
+    def test_crawl_keeps_wall_collision_and_sliding(self):
+        navigator = self.navigator((16, 470))
+        navigator.update(pygame.Vector2(-1, 0), 0.05, crouching=True)
+        self.assertEqual(navigator.player_position, (16, 470))
+        self.assertFalse(navigator._walking)
+        navigator.update(pygame.Vector2(-1, 1), 0.05, crouching=True)
+        self.assertEqual(navigator.player_position[0], 16)
+        self.assertGreater(navigator.player_position[1], 470)
+        self.assertTrue(navigator._walking)
+
+    def test_crawl_animation_advances_instead_of_sliding_one_pose(self):
+        navigator = self.navigator()
+        frames = tuple(pygame.Surface((1, 1)) for _ in range(4))
+        crouch = pygame.Surface((1, 1))
+        navigator._player_crawl_frames = {"right": frames}
+        navigator._player_action_frames = {"right": (crouch,) * 4}
+        navigator.update(pygame.Vector2(1, 0), 0.01, crouching=True)
+        self.assertIs(navigator._player_frame(0), frames[0])
+        navigator.update(pygame.Vector2(1, 0), 0.2, crouching=True)
+        self.assertIs(navigator._player_frame(0), frames[1])
+        navigator.update(pygame.Vector2(), 0.1, crouching=True)
+        self.assertIs(navigator._player_frame(0), crouch)
+        self.assertEqual(navigator._crawl_distance, 0)
+
+    def test_crawl_phase_tracks_actual_distance_at_any_frame_rate(self):
+        frames = tuple(pygame.Surface((1, 1)) for _ in range(4))
+        for rate in (30, 60, 120):
+            navigator = self.navigator()
+            navigator._player_crawl_frames = {"right": frames}
+            for _ in range(rate // 5):
+                navigator.update(pygame.Vector2(1, 0), 1 / rate, crouching=True)
+            self.assertAlmostEqual(navigator._crawl_distance, 22)
+            self.assertIs(navigator._player_frame(0), frames[1])
+
+    def test_crawl_phase_resets_at_walls_and_on_standing_or_jumping(self):
+        navigator = self.navigator((16, 470))
+        navigator.update(pygame.Vector2(-1, 1), 0.05, crouching=True)
+        self.assertAlmostEqual(navigator._crawl_distance, navigator.player_position[1] - 470)
+        navigator.update(pygame.Vector2(-1, 0), 0.05, crouching=True)
+        self.assertEqual(navigator._crawl_distance, 0)
+        navigator.update(pygame.Vector2(1, 0), 0.05, crouching=True)
+        navigator.update(pygame.Vector2(1, 0), 0.05)
+        self.assertEqual(navigator._crawl_distance, 0)
+        navigator.update(pygame.Vector2(1, 0), 0.05, crouching=True)
+        navigator._start_jump()
+        navigator.update(pygame.Vector2(1, 0), 0.05, crouching=True)
+        self.assertEqual(navigator._crawl_distance, 0)
+
+    def test_jump_arc_and_landing_are_frame_rate_independent(self):
+        for rate in (30, 60, 120):
+            with self.subTest(rate=rate):
+                navigator = self.navigator()
+                navigator._cycle_dance()
+                navigator._start_jump()
+                self.assertFalse(navigator._dancing)
+                self.assertEqual(navigator._jump_offset(), 0)
+                half_frames = round(PLAYER_JUMP_SECONDS * rate / 2)
+                for _ in range(half_frames):
+                    navigator.update(pygame.Vector2(), 1 / rate)
+                self.assertAlmostEqual(navigator._jump_offset(), PLAYER_JUMP_HEIGHT)
+                for _ in range(half_frames):
+                    navigator.update(pygame.Vector2(), 1 / rate)
+                self.assertFalse(navigator._jumping)
+                self.assertEqual(navigator._jump_offset(), 0)
+                self.assertEqual(navigator.player_position, PLAYER_START)
+
+    def test_jump_cannot_restart_or_dance_in_midair(self):
+        navigator = self.navigator()
+        navigator._start_jump()
+        navigator.update(pygame.Vector2(), 0.2)
+        navigator._start_jump()
+        navigator._cycle_dance()
+        self.assertEqual(navigator._jump_time, 0.2)
+        self.assertFalse(navigator._dancing)
+
+    def test_jump_from_crouch_and_crouch_on_landing(self):
+        navigator = self.navigator()
+        navigator.update(pygame.Vector2(), 0.01, crouching=True)
+        navigator._start_jump()
+        self.assertFalse(navigator._crouching)
+        navigator.update(pygame.Vector2(), 0.1, crouching=True)
+        self.assertFalse(navigator._crouching)
+        navigator.update(pygame.Vector2(), PLAYER_JUMP_SECONDS, crouching=True)
+        self.assertFalse(navigator._jumping)
+        self.assertTrue(navigator._crouching)
+
+    def test_jumping_uses_ground_collision_and_can_move(self):
+        for position, direction in (
+            ((16, 470), pygame.Vector2(-1, 0)),
+            ((480, 950), pygame.Vector2(0, 1)),
+            (PLAYER_START, pygame.Vector2(1, 0)),
+        ):
+            with self.subTest(position=position):
+                ground = self.navigator(position)
+                airborne = self.navigator(position)
+                airborne._start_jump()
+                ground.update(direction, 0.05)
+                airborne.update(direction, 0.05)
+                self.assertEqual(ground.player_position, airborne.player_position)
+                self.assertTrue(airborne._jumping)
 
     def test_walk_clock_resets_when_blocked(self):
         navigator = self.navigator((16, 470))
@@ -148,6 +342,173 @@ class HospitalFlowTests(unittest.TestCase):
             navigator.run()
         self.assertEqual(navigator._animation_time, 0)
         self.assertEqual(navigator.player_position, PLAYER_START)
+
+    def test_d_key_cycles_without_moving_and_ignores_repeat(self):
+        navigator = HospitalNavigator([], set(), window=self.window)
+        key = pygame.event.Event(pygame.KEYDOWN, key=pygame.K_d)
+        repeat = pygame.event.Event(pygame.KEYDOWN, key=pygame.K_d, repeat=True)
+        held_keys = defaultdict(bool, {pygame.K_d: True})
+        with patch("pygame.key.get_pressed", return_value=held_keys), patch(
+            "pygame.event.get",
+            side_effect=[[key], [repeat], [pygame.event.Event(pygame.QUIT)]],
+        ):
+            navigator.run()
+        self.assertTrue(navigator._dancing)
+        self.assertEqual(navigator._dance_index, 0)
+        self.assertGreater(navigator._dance_time, 0)
+        self.assertEqual(navigator.player_position, PLAYER_START)
+        for expected in (1, 2, None):
+            with patch("pygame.key.get_pressed", return_value=held_keys), patch(
+                "pygame.event.get", side_effect=[[key], [pygame.event.Event(pygame.QUIT)]]
+            ):
+                navigator.run()
+            self.assertEqual(navigator._dance_index, expected)
+        self.assertFalse(navigator._dancing)
+        self.assertEqual(navigator.player_position, PLAYER_START)
+
+    def test_arrow_key_moves_and_cancels_dance(self):
+        navigator = HospitalNavigator([], set(), window=self.window)
+        navigator._cycle_dance()
+        held_keys = defaultdict(bool, {pygame.K_RIGHT: True})
+        with patch("pygame.key.get_pressed", return_value=held_keys), patch(
+            "pygame.event.get", side_effect=[[], [pygame.event.Event(pygame.QUIT)]]
+        ):
+            navigator.run()
+        self.assertFalse(navigator._dancing)
+        self.assertGreater(navigator.player_position[0], PLAYER_START[0])
+
+    def test_focus_loss_freezes_dance_and_menu_ignores_d(self):
+        navigator = HospitalNavigator([], set(), window=self.window)
+        navigator._cycle_dance()
+        navigator.update(pygame.Vector2(), 0.1)
+        with patch(
+            "pygame.event.get",
+            side_effect=[
+                [pygame.event.Event(pygame.WINDOWFOCUSLOST)],
+                [pygame.event.Event(pygame.KEYDOWN, key=pygame.K_d)],
+                [pygame.event.Event(pygame.QUIT)],
+            ],
+        ):
+            navigator.run()
+        self.assertTrue(navigator._dancing)
+        self.assertEqual(navigator._dance_time, 0.1)
+        navigator._choose_menu("Resume")
+        navigator.update(pygame.Vector2(), 0.1)
+        self.assertEqual(navigator._dance_time, 0.2)
+
+    def test_c_and_arrows_crawl_and_release_stands(self):
+        navigator = HospitalNavigator([], set(), window=self.window)
+        held_keys = defaultdict(bool, {pygame.K_c: True, pygame.K_RIGHT: True})
+        with patch("pygame.key.get_pressed", return_value=held_keys), patch(
+            "pygame.event.get", side_effect=[[], [pygame.event.Event(pygame.QUIT)]]
+        ):
+            navigator.run()
+        self.assertTrue(navigator._crouching)
+        self.assertGreater(navigator.player_position[0], PLAYER_START[0])
+        self.assertEqual(navigator._facing, "right")
+        self.assertIn(navigator._player_frame(0), navigator._player_crawl_frames["right"])
+        with patch("pygame.key.get_pressed", return_value=defaultdict(bool)), patch(
+            "pygame.event.get", side_effect=[[], [pygame.event.Event(pygame.QUIT)]]
+        ):
+            navigator.run()
+        self.assertFalse(navigator._crouching)
+
+    def test_crawl_stays_grounded_without_walk_bob_or_dust(self):
+        navigator = HospitalNavigator([], set(), window=self.window)
+        navigator._scene_started_at = -1000
+        marker = pygame.Surface((12, 20), pygame.SRCALPHA)
+        marker.fill((251, 0, 251))
+        for direction in ((0, 1), (0, -1)):
+            navigator.update(pygame.Vector2(direction), 0.05, crouching=True)
+            navigator._walk_time = 0.07
+            with patch.object(navigator, "_player_frame", return_value=marker), patch.object(navigator, "_draw_walk_dust") as dust:
+                navigator.draw()
+            position = navigator._player_position - navigator._camera()
+            foot = (round(position.x), round(position.y) - 1)
+            self.assertEqual(navigator._screen.get_at(foot), pygame.Color(251, 0, 251))
+            dust.assert_not_called()
+
+    def test_crawl_cannot_enter_locked_room(self):
+        navigator = HospitalNavigator(self.scenarios, set(), (420, 700), window=self.window)
+        navigator.update(pygame.Vector2(-1, 0), 0.05, crouching=True)
+        self.assertEqual(navigator.player_position, (420, 700))
+        self.assertFalse(navigator._walking)
+        self.assertTrue(navigator._crouching)
+
+    def test_space_starts_one_jump_and_repeat_does_not_start_another(self):
+        navigator = HospitalNavigator([], set(), window=self.window)
+        key = pygame.event.Event(pygame.KEYDOWN, key=pygame.K_SPACE)
+        repeat = pygame.event.Event(pygame.KEYDOWN, key=pygame.K_SPACE, repeat=True)
+        with patch("pygame.key.get_pressed", return_value=defaultdict(bool)), patch(
+            "pygame.event.get", side_effect=[[key], [pygame.event.Event(pygame.QUIT)]]
+        ):
+            navigator.run()
+        self.assertTrue(navigator._jumping)
+        navigator.update(pygame.Vector2(), PLAYER_JUMP_SECONDS)
+        with patch("pygame.key.get_pressed", return_value=defaultdict(bool)), patch(
+            "pygame.event.get", side_effect=[[repeat], [pygame.event.Event(pygame.QUIT)]]
+        ):
+            navigator.run()
+        self.assertFalse(navigator._jumping)
+
+    def test_pause_freezes_jump_and_clears_crouch(self):
+        navigator = HospitalNavigator([], set(), window=self.window)
+        navigator._start_jump()
+        navigator.update(pygame.Vector2(), 0.1)
+        navigator._pause()
+        with patch("pygame.event.get", side_effect=[
+            [pygame.event.Event(pygame.KEYDOWN, key=pygame.K_d)],
+            [pygame.event.Event(pygame.QUIT)],
+        ]):
+            navigator.run()
+        self.assertEqual(navigator._jump_time, 0.1)
+        navigator._choose_menu("Resume")
+        navigator.update(pygame.Vector2(), PLAYER_JUMP_SECONDS, crouching=True)
+        self.assertTrue(navigator._crouching)
+        navigator._pause()
+        self.assertFalse(navigator._crouching)
+        with patch("pygame.key.get_pressed", return_value=defaultdict(bool)), patch(
+            "pygame.event.get",
+            side_effect=[
+                [pygame.event.Event(pygame.KEYDOWN, key=pygame.K_SPACE)],
+                [pygame.event.Event(pygame.QUIT)],
+            ],
+        ):
+            navigator.run()
+        self.assertIsNone(navigator._menu)
+        self.assertFalse(navigator._jumping)
+
+    def test_jump_renders_above_its_ground_shadow_without_walk_dust(self):
+        navigator = HospitalNavigator([], set(), window=self.window)
+        navigator._scene_started_at = -1000
+        navigator._start_jump()
+        navigator.update(pygame.Vector2(), PLAYER_JUMP_SECONDS / 2)
+        navigator._walking = True
+        marker = pygame.Surface((12, 20), pygame.SRCALPHA)
+        marker.fill((251, 0, 251))
+        with patch.object(navigator, "_player_frame", return_value=marker), patch.object(navigator, "_draw_walk_dust") as dust:
+            navigator.draw()
+        ground = navigator._player_position - navigator._camera()
+        foot = (round(ground.x), round(ground.y - PLAYER_JUMP_HEIGHT) - 1)
+        self.assertEqual(navigator._screen.get_at(foot), pygame.Color(251, 0, 251))
+        self.assertEqual(navigator._screen.get_at((round(ground.x), round(ground.y))), pygame.Color(78, 103, 97))
+        dust.assert_not_called()
+
+    def test_jump_cannot_bypass_locked_room_or_start_consultation(self):
+        navigator = HospitalNavigator(self.scenarios, set(), (420, 700), window=self.window)
+        navigator._start_jump()
+        navigator.update(pygame.Vector2(-1, 0), 0.05)
+        self.assertEqual(navigator.player_position, (420, 700))
+        navigator._player_position = pygame.Vector2(225, 360)
+        with patch("pygame.key.get_pressed", return_value=defaultdict(bool)), patch(
+            "pygame.event.get",
+            side_effect=[
+                [pygame.event.Event(pygame.KEYDOWN, key=pygame.K_RETURN)],
+                [pygame.event.Event(pygame.QUIT)],
+            ],
+        ), patch.object(navigator, "_fade_out") as fade:
+            self.assertIsNone(navigator.run())
+        fade.assert_not_called()
 
     def test_side_walk_keeps_supporting_foot_on_ground(self):
         navigator = HospitalNavigator([], set(), window=self.window)

@@ -116,7 +116,20 @@ reset the full campaign.
 
 ## Controls and game loop
 
-- Move with arrow keys or WASD; press Enter near a highlighted patient.
+- Move with arrow keys; press Enter near a highlighted patient.
+- In the hospital, press D to cycle **Groove -> Disco -> Robot -> stop**.
+  Arrow keys also stop dancing and resume movement.
+- Hold C to crouch; use arrow keys while holding C to crawl at half walking
+  speed with an animated hands-and-knees gait. Stop moving to return to the
+  stationary crouch. Release C to stand and resume normal walking.
+  Crouching stops dancing.
+- Press Space to jump, including from a crouch. Arrow keys let you move while
+  airborne, but walls, patients, obstacles, and locked rooms still block you.
+  Hold C when landing to return to a crouch. There is no double-jump or automatic
+  repeat jump when holding Space.
+- Dances and jumps pause with the hospital. Dance input is ignored while
+  crouching or jumping; stand/land before entering a consultation. These keys
+  still type normally during consultations. WASD movement is no longer used.
 - Enter Pediatrics and the Diagnostics Lab through their corridor doors.
 - Hold either Shift key to speak. Click the text field and press Enter to type.
 - In chat, diagnosis, care-plan text fields and Dragon Copilot, use Cmd+V on
@@ -551,6 +564,33 @@ falls back to the original directional sheet if either new atlas is invalid.
 All directions and both states share one normalization scale and foot baseline.
 Consultation sprites and legacy `128x200` frame contracts are unchanged.
 
+The D-key dances use `dr_ash_dance_atlas.png` (Groove), `dr_ash_disco_atlas.png`,
+and `dr_ash_robot_atlas.png`: four frames per direction in the same
+down/left/right/up row order, looping at six frames per second. Each sheet is
+normalized separately to preserve the existing walk/idle scale. The matching
+`*_source.png` files preserve full-resolution artwork from the Azure
+image-generation skill, using the idle atlas as the character reference.
+
+`dr_ash_actions_atlas.png` uses the same grid, with standing, crouching, takeoff,
+and airborne poses in columns 1-4. One scale across all action frames keeps the
+crouch visibly shorter instead of stretching it to standing height. Jumps last
+0.6 seconds with a 40-world-pixel parabolic lift; the shadow, camera target,
+collision footprint, and depth ordering stay anchored to the ground position.
+All action atlases are required and validated at startup rather than silently
+substituting walking frames.
+
+`dr_ash_crawl_atlas.png` adds four hands-and-knees poses per direction. Crawling
+uses a lower 62-pixel canvas and advances one cycle per 72 world pixels actually
+traveled, including wall sliding. It stops animating when blocked or stationary
+and returns to the crouch pose. It has no standing walk bob or dust. The atlas
+preparer fits wide silhouettes within the cell width as well as its height so
+outstretched crawling limbs are not clipped.
+
+The offline preview exports `dance.png`, `dance_disco.png`, `dance_robot.png`,
+their `*_frames.png` contact sheets, and `crouch.png`, `jump.png`, `landed.png`,
+`action_frames.png`, `crawl_frames.png`, and `crawl_motion.png` (four successive
+gameplay frames) alongside the existing animation previews.
+
 The prepared walk atlas retains the original down/up rows and uses the repaired
 left/right rows from `dr_ash_side_walk_source.png`. Side cycles include contact,
 recoil, and narrow passing poses for each leg. They advance once per 80 world
@@ -567,6 +607,11 @@ extracts isolated figures in row order, and repacks a strict transparent grid:
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy uv run python -m tools.prepare_atlas data/sprites/players/dr_ash_walk_source.png .artifacts/dr_ash_walk_original.png --columns 6
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy uv run python -m tools.prepare_atlas data/sprites/players/dr_ash_side_walk_source.png .artifacts/dr_ash_side_walk.png --columns 6
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy uv run python -m tools.prepare_atlas data/sprites/players/dr_ash_idle_source.png data/sprites/players/dr_ash_idle_atlas.png --columns 4
+SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy uv run python -m tools.prepare_atlas data/sprites/players/dr_ash_dance_source.png data/sprites/players/dr_ash_dance_atlas.png --columns 4
+SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy uv run python -m tools.prepare_atlas data/sprites/players/dr_ash_disco_source.png data/sprites/players/dr_ash_disco_atlas.png --columns 4
+SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy uv run python -m tools.prepare_atlas data/sprites/players/dr_ash_robot_source.png data/sprites/players/dr_ash_robot_atlas.png --columns 4
+SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy uv run python -m tools.prepare_atlas data/sprites/players/dr_ash_actions_source.png data/sprites/players/dr_ash_actions_atlas.png --columns 4
+SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy uv run python -m tools.prepare_atlas data/sprites/players/dr_ash_crawl_source.png data/sprites/players/dr_ash_crawl_atlas.png --columns 4
 ```
 
 For a walk-atlas rebuild, replace only the original atlas's second and third

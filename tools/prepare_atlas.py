@@ -34,7 +34,11 @@ def prepare_atlas(source: Path, output: Path, columns: int) -> None:
             mask = figure.to_surface(surface=pygame.Surface(sheet.get_size(), pygame.SRCALPHA), setcolor=(255, 255, 255, 255), unsetcolor=(255, 255, 255, 0))
             frame.blit(mask, (0, 0), area=bounds, special_flags=pygame.BLEND_RGBA_MULT)
             frames.append(frame)
-    normalized = normalize_character_frames(frames, 208)
+    source_width = max(frame.get_width() for frame in frames)
+    source_height = max(frame.get_height() for frame in frames)
+    # Low, wide poses need a width limit as well as a height limit.
+    target_height = min(208, max(1, 232 * source_height // source_width))
+    normalized = normalize_character_frames(frames, target_height)
     atlas = pygame.Surface((columns * 256, 1024), pygame.SRCALPHA)
     for index, frame in enumerate(normalized):
         row, column = divmod(index, columns)

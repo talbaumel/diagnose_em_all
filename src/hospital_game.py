@@ -43,7 +43,18 @@ from src.realtime_conversation import (
 
 WORLD_MAP_SIZE = (960, 960)
 OVERWORLD_CHARACTER_HEIGHT = 92
+OVERWORLD_CRAWL_HEIGHT = 62
 PLAYER_DIRECTION_SHEET = PLAYER_SPRITE_SHEET.with_name("dr_ash_directions.png")
+PLAYER_DANCES = (
+    ("Groove", "dr_ash_dance_atlas.png"),
+    ("Disco", "dr_ash_disco_atlas.png"),
+    ("Robot", "dr_ash_robot_atlas.png"),
+)
+PLAYER_ACTION_SHEET = PLAYER_SPRITE_SHEET.with_name("dr_ash_actions_atlas.png")
+PLAYER_CRAWL_SHEET = PLAYER_SPRITE_SHEET.with_name("dr_ash_crawl_atlas.png")
+PLAYER_DANCE_FPS = 6
+PLAYER_JUMP_SECONDS = 0.6
+PLAYER_JUMP_HEIGHT = 40
 PLAYER_DIRECTION_ROWS = {"down": 0, "left": 1, "right": 2, "up": 3}
 PLAYER_DIRECTION_FRAME_ORDER = {
     "down": (0, 1, 2, 3),
@@ -54,6 +65,8 @@ PLAYER_DIRECTION_FRAME_ORDER = {
 PLAYER_RIGHT_ARTIFACT_RECT = (0, 46, PLAYER_FRAME_SIZE[0], 3)
 PLAYER_START = (480, 480)
 PLAYER_SPEED = 220
+PLAYER_CRAWL_SPEED = PLAYER_SPEED * 0.5
+PLAYER_CRAWL_CYCLE_DISTANCE = 72
 PLAYER_SIDE_WALK_CYCLE_DISTANCE = 80
 INTERACTION_DISTANCE = 88
 PATIENT_COLLISION_DISTANCE = 28
@@ -295,6 +308,11 @@ class HospitalNavigator:
             self._menu = ChoiceMenu("ALL CASES CLOSED", ("Continue Exploring", "New Game"), f"{len(self._scenarios)} patients helped. Hospital rounds complete.")
         self._facing = "down"
         self._walking = False
+        self._dance_index: int | None = None
+        self._dance_time = 0.0
+        self._crouching = False
+        self._crawl_distance = 0.0
+        self._jump_time: float | None = None
         self._animation_time = 0.0
         self._walk_time = 0.0
         self._walk_distance = 0.0
@@ -336,6 +354,14 @@ class HospitalNavigator:
         }
         self._player_idle_frames: dict[str, tuple[pygame.Surface, ...]] | None = None
         self._load_player_atlases()
+        self._player_dance_frames = tuple(
+            self._load_action_frames(PLAYER_SPRITE_SHEET.with_name(filename))
+            for _, filename in PLAYER_DANCES
+        )
+        self._player_action_frames = self._load_action_frames(PLAYER_ACTION_SHEET)
+        self._player_crawl_frames = self._load_action_frames(
+            PLAYER_CRAWL_SHEET, target_height=OVERWORLD_CRAWL_HEIGHT
+        )
         self._patient_frames = {}
         for scenario in self._scenarios:
             raw_patient_frames = {
@@ -435,6 +461,25 @@ class HospitalNavigator:
         return extract_character(frame)
 
     def _player_frame(self, animation_time: float) -> pygame.Surface:
+        if self._jump_time is not None:
+            phase = self._jump_time / PLAYER_JUMP_SECONDS
+            frame_index = 3 if 0.25 <= phase < 0.75 else 2
+            return self._player_action_frames[self._facing][frame_index]
+        if self._crouching:
+            if self._walking:
+                frames = self._player_crawl_frames[self._facing]
+                return animation_frame(
+                    frames,
+                    self._crawl_distance / PLAYER_CRAWL_CYCLE_DISTANCE,
+                    len(frames),
+                )
+            return self._player_action_frames[self._facing][1]
+        if self._dance_index is not None:
+            return animation_frame(
+                self._player_dance_frames[self._dance_index][self._facing],
+                self._dance_time,
+                PLAYER_DANCE_FPS,
+            )
         if not self._walking and self._player_idle_frames is not None:
             frames = self._player_idle_frames[self._facing]
             sequence = (frames[0],) * 14 + (frames[1], frames[2], frames[3], frames[1])
@@ -447,6 +492,22 @@ class HospitalNavigator:
             animation_time,
             7,
         )
+
+    @staticmethod
+    def _load_action_frames(
+        path: Path, *, target_height: int = OVERWORLD_CHARACTER_HEIGHT
+    ) -> dict[str, tuple[pygame.Surface, ...]]:
+        atlas = load_atlas(path, 4)
+        source_size = (
+            max(frame.get_width() for row in atlas for frame in row),
+            max(frame.get_height() for row in atlas for frame in row),
+        )
+        return {
+            direction: normalize_character_frames(
+                atlas[row], target_height, source_size
+            )
+            for direction, row in PLAYER_DIRECTION_ROWS.items()
+        }
 
     def _load_player_atlases(self) -> None:
         directory = PLAYER_DIRECTION_SHEET.parent
@@ -522,11 +583,47 @@ class HospitalNavigator:
             for scenario in self._scenarios
         )
 
+    @property
+    def _dancing(self) -> bool:
+        return self._dance_index is not None
+
+    @property
+    def _jumping(self) -> bool:
+        return self._jump_time is not None
+
+    def _stop_dance(self) -> None:
+        self._dance_index = None
+        self._dance_time = 0.0
+
+    def _cycle_dance(self) -> None:
+        if self._crouching or self._jumping:
+            return
+        next_index = 0 if self._dance_index is None else self._dance_index + 1
+        self._dance_index = next_index if next_index < len(PLAYER_DANCES) else None
+        self._dance_time = 0.0
+        self._walking = False
+        self._walk_time = 0.0
+        self._walk_distance = 0.0
+
+    def _start_jump(self) -> None:
+        if self._jumping:
+            return
+        self._stop_dance()
+        self._crouching = False
+        self._jump_time = 0.0
+
+    def _jump_offset(self) -> float:
+        if self._jump_time is None:
+            return 0.0
+        phase = self._jump_time / PLAYER_JUMP_SECONDS
+        return 4 * PLAYER_JUMP_HEIGHT * phase * (1 - phase)
+
     def move(self, direction: pygame.Vector2, elapsed_seconds: float) -> None:
         if direction.length_squared() == 0:
             self._walking = False
             return
 
+        self._stop_dance()
         previous_position = self._player_position.copy()
         if abs(direction.x) > abs(direction.y):
             self._facing = "left" if direction.x < 0 else "right"
@@ -534,7 +631,8 @@ class HospitalNavigator:
             self._facing = "up" if direction.y < 0 else "down"
         direction = direction.normalize()
 
-        distance = PLAYER_SPEED * elapsed_seconds
+        speed = PLAYER_CRAWL_SPEED if self._crouching else PLAYER_SPEED
+        distance = speed * elapsed_seconds
         horizontal = self._player_position + pygame.Vector2(direction.x * distance, 0)
         if self._can_stand(horizontal):
             self._player_position = horizontal
@@ -579,12 +677,31 @@ class HospitalNavigator:
         )
         return nearest if distance_to_room(nearest) <= 76 else None
 
-    def update(self, direction: pygame.Vector2, elapsed_seconds: float) -> None:
+    def update(
+        self,
+        direction: pygame.Vector2,
+        elapsed_seconds: float,
+        *,
+        crouching: bool = False,
+    ) -> None:
+        if self._jump_time is not None:
+            self._jump_time += elapsed_seconds
+            if self._jump_time >= PLAYER_JUMP_SECONDS - 1e-9:
+                self._jump_time = None
+        self._crouching = crouching and not self._jumping
+        if self._crouching:
+            self._stop_dance()
         previous_position = self._player_position.copy()
         self.move(direction, elapsed_seconds)
         self._animation_time += elapsed_seconds
+        if self._dancing:
+            self._dance_time += elapsed_seconds
         self._walk_time = self._walk_time + elapsed_seconds if self._walking else 0.0
         self._walk_distance = self._walk_distance + self._player_position.distance_to(previous_position) if self._walking else 0.0
+        if self._crouching and self._walking:
+            self._crawl_distance += self._player_position.distance_to(previous_position)
+        else:
+            self._crawl_distance = 0.0
         self._camera_position = self._camera_position.lerp(
             self._camera_target(), 1 - math.exp(-elapsed_seconds / 0.10)
         )
@@ -1064,13 +1181,15 @@ class HospitalNavigator:
             is_nearby = nearby is not None and patient_type == nearby.patient_type
             if is_nearby:
                 self._draw_interaction_ring(rectangle)
-            if patient_type is None and self._walking:
+            if patient_type is None and self._walking and not self._jumping and not self._crouching:
                 self._draw_walk_dust(rectangle)
             shadow = pygame.Rect(0, 0, max(24, rectangle.width - 16), 12)
             shadow.center = rectangle.midbottom
             pygame.draw.ellipse(self._screen, (78, 103, 97), shadow)
             draw_rectangle = rectangle
-            if patient_type is None and self._walking and self._facing not in ("left", "right"):
+            if patient_type is None and self._jumping:
+                draw_rectangle = rectangle.move(0, -round(self._jump_offset()))
+            elif patient_type is None and self._walking and not self._crouching and self._facing not in ("left", "right"):
                 walk_lift = round(
                     abs(math.sin(self._walk_time * math.pi * 7)) * 2
                 )
@@ -1088,6 +1207,22 @@ class HospitalNavigator:
             self._draw_patient_prompt()
         elif locked_room:
             self._draw_locked_room_prompt(locked_room)
+        else:
+            panel = pygame.Rect(12, 420, 456, 48)
+            pygame.draw.rect(self._screen, UI_PANEL, panel, border_radius=7)
+            if self._jumping:
+                hint = "Jumping"
+            elif self._crouching:
+                hint = "Crawling - release C to stand" if self._walking else "Crouching - arrows to crawl"
+            elif self._dance_index is not None:
+                dance_name = PLAYER_DANCES[self._dance_index][0]
+                next_action = "Stop" if self._dance_index == len(PLAYER_DANCES) - 1 else "Next dance"
+                hint = f"{dance_name}   |   D: {next_action}   |   Arrows: Move"
+            else:
+                hint = "Arrows: Move   |   D: Dance   |   Enter: Talk"
+            for line, label in enumerate((hint, "Hold C: Crouch   |   Space: Jump")):
+                text = self._small_font.render(label, True, UI_MINT)
+                self._screen.blit(text, text.get_rect(center=(panel.centerx, 434 + line * 19)))
 
         self._draw_scene_fade()
 
@@ -1123,12 +1258,18 @@ class HospitalNavigator:
                         self._pause()
                         continue
                 if event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_d and not getattr(event, "repeat", False):
+                        self._cycle_dance()
+                        continue
+                    if event.key == pygame.K_SPACE and not getattr(event, "repeat", False):
+                        self._start_jump()
+                        continue
                     if event.key == pygame.K_ESCAPE:
                         self._pause()
                         continue
                     if event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
                         nearby = self.nearest_patient()
-                        if nearby:
+                        if nearby and not self._jumping and not self._crouching:
                             self._fade_out()
                             return nearby
 
@@ -1137,16 +1278,15 @@ class HospitalNavigator:
                 continue
             keys = pygame.key.get_pressed()
             direction = pygame.Vector2(
-                int(keys[pygame.K_RIGHT] or keys[pygame.K_d])
-                - int(keys[pygame.K_LEFT] or keys[pygame.K_a]),
-                int(keys[pygame.K_DOWN] or keys[pygame.K_s])
-                - int(keys[pygame.K_UP] or keys[pygame.K_w]),
+                int(keys[pygame.K_RIGHT]) - int(keys[pygame.K_LEFT]),
+                int(keys[pygame.K_DOWN]) - int(keys[pygame.K_UP]),
             )
-            self.update(direction, elapsed_seconds)
+            self.update(direction, elapsed_seconds, crouching=bool(keys[pygame.K_c]))
             self.draw()
 
     def _pause(self) -> None:
         self._walking = False
+        self._crouching = False
         self._menu_kind = "pause"
         self._menu = ChoiceMenu("HOSPITAL PAUSED", ("Resume", "New Game", "Save & Quit"), f"{len(self._diagnosed)} of {len(self._scenarios)} cases closed.")
 
