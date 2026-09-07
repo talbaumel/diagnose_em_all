@@ -7,7 +7,14 @@ from pathlib import Path
 
 import pygame
 
-from src.hospital_game import HospitalNavigator, load_patient_scenarios
+from src.hospital_game import (
+    HospitalNavigator,
+    PLAYER_CRAWL_CYCLE_DISTANCE,
+    PLAYER_CRAWL_SPEED,
+    PLAYER_DANCES,
+    PLAYER_JUMP_SECONDS,
+    load_patient_scenarios,
+)
 from src.realtime_conversation import PatientAnimator, Test
 from src.game_ui import ChoiceMenu
 from src.care_plan_ui import CareOrderForm
@@ -39,6 +46,56 @@ def main() -> None:
     arguments.output_dir.mkdir(parents=True, exist_ok=True)
     navigator.draw()
     pygame.image.save(window, str(arguments.output_dir / "hospital.png"))
+    for index, (name, _) in enumerate(PLAYER_DANCES):
+        navigator._cycle_dance()
+        navigator.update(pygame.Vector2(), 0.2)
+        navigator.draw()
+        prefix = "dance" if index == 0 else f"dance_{name.lower()}"
+        pygame.image.save(window, str(arguments.output_dir / f"{prefix}.png"))
+        dance_sheet = pygame.Surface((400, 4 * 128), pygame.SRCALPHA)
+        dance_sheet.fill((22, 43, 46))
+        for row, direction in enumerate(("down", "left", "right", "up")):
+            for column, frame in enumerate(navigator._player_dance_frames[index][direction]):
+                dance_sheet.blit(
+                    frame,
+                    frame.get_rect(midbottom=(column * 100 + 50, row * 128 + 112)),
+                )
+        pygame.image.save(dance_sheet, str(arguments.output_dir / f"{prefix}_frames.png"))
+    navigator._stop_dance()
+    navigator.update(pygame.Vector2(), 0.01, crouching=True)
+    navigator.draw()
+    pygame.image.save(window, str(arguments.output_dir / "crouch.png"))
+    navigator._start_jump()
+    navigator.update(pygame.Vector2(), PLAYER_JUMP_SECONDS / 2)
+    navigator.draw()
+    pygame.image.save(window, str(arguments.output_dir / "jump.png"))
+    navigator.update(pygame.Vector2(), PLAYER_JUMP_SECONDS / 2)
+    navigator.draw()
+    pygame.image.save(window, str(arguments.output_dir / "landed.png"))
+    crawl_motion = pygame.Surface((960, 960))
+    step_time = PLAYER_CRAWL_CYCLE_DISTANCE / PLAYER_CRAWL_SPEED / 4
+    for index in range(4):
+        navigator.update(pygame.Vector2(1, 0), step_time, crouching=True)
+        navigator.draw()
+        row, column = divmod(index, 2)
+        crawl_motion.blit(navigator._screen, (column * 480, row * 480))
+    pygame.image.save(crawl_motion, str(arguments.output_dir / "crawl_motion.png"))
+    crawl_sheet = pygame.Surface((400, 4 * 128), pygame.SRCALPHA)
+    crawl_sheet.fill((22, 43, 46))
+    for row, direction in enumerate(("down", "left", "right", "up")):
+        for column, frame in enumerate(navigator._player_crawl_frames[direction]):
+            crawl_sheet.blit(frame, frame.get_rect(midbottom=(column * 100 + 50, row * 128 + 112)))
+    pygame.image.save(crawl_sheet, str(arguments.output_dir / "crawl_frames.png"))
+    navigator.update(pygame.Vector2(), 0)
+    action_sheet = pygame.Surface((400, 4 * 128), pygame.SRCALPHA)
+    action_sheet.fill((22, 43, 46))
+    for row, direction in enumerate(("down", "left", "right", "up")):
+        for column, frame in enumerate(navigator._player_action_frames[direction]):
+            action_sheet.blit(
+                frame,
+                frame.get_rect(midbottom=(column * 100 + 50, row * 128 + 112)),
+            )
+    pygame.image.save(action_sheet, str(arguments.output_dir / "action_frames.png"))
     navigator._player_position = pygame.Vector2(225, 360)
     navigator._camera_position = navigator._camera_target()
     navigator.update(pygame.Vector2(), 0.016)
