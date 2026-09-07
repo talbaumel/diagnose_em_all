@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import unittest
 import tempfile
 from pathlib import Path
@@ -7,10 +8,56 @@ from unittest.mock import patch
 
 import pygame
 
-from src.hospital_game import HospitalNavigator, PLAYER_SPEED, PLAYER_START, HOSPITAL_ROOMS, load_patient_scenarios, start_hospital_game
+from src.hospital_game import HospitalNavigator, PLAYER_SPEED, PLAYER_START, HOSPITAL_ROOMS, load_patient_scenario, load_patient_scenarios, start_hospital_game
 from src.game_ui import ChoiceMenu
 from src.game_progress import Progress, ProgressStore
 from src.realtime_conversation import ConversationResult
+
+
+class PatientDemographicsTests(unittest.TestCase):
+    def setUp(self):
+        self.path = Path(__file__).resolve().parents[1] / "data/prompts/01_common_cold_kid.json"
+        self.data = json.loads(self.path.read_text(encoding="utf-8"))
+
+    def load(self):
+        with patch("src.hospital_game.json.load", return_value=self.data):
+            return load_patient_scenario(self.path)
+
+    def test_demographics_reach_conversation_instructions(self):
+        self.data.update(age=8, gender="male", system_prompts="Answer as the patient.")
+        prompt = self.load().conversation_parameters()["system_prompts"]
+        self.assertIn("Age: 8 years.", prompt)
+        self.assertIn("Gender: male.", prompt)
+        self.assertIn("Answer as the patient.", prompt)
+
+    def test_list_prompts_preserve_order(self):
+        self.data.update(age=16, gender="female", system_prompts=["First.", "Second."])
+        prompt = self.load().system_prompts
+        self.assertEqual(prompt[1:], ("First.", "Second."))
+        self.assertIn("Age: 16 years.", prompt[0])
+        self.assertIn("Gender: female.", prompt[0])
+
+    def test_legacy_patient_without_demographics_still_loads(self):
+        self.data.pop("age", None)
+        self.data.pop("gender", None)
+        self.assertEqual(self.load().system_prompts, self.data["system_prompts"])
+
+    def test_invalid_demographics_are_rejected(self):
+        for field, values in (
+            ("age", (True, -1, 121, 8.5, "8", None)),
+            ("gender", ("", "  ", 1, None)),
+        ):
+            for value in values:
+                with self.subTest(field=field, value=value):
+                    self.data.update(age=8, gender="male")
+                    self.data[field] = value
+                    with self.assertRaisesRegex(ValueError, field):
+                        self.load()
+
+    def test_unknown_fields_remain_rejected(self):
+        self.data["age_years"] = 8
+        with self.assertRaisesRegex(ValueError, "Patient prompt must contain"):
+            self.load()
 
 
 class MovementTests(unittest.TestCase):

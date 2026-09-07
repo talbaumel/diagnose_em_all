@@ -172,9 +172,10 @@ def load_patient_scenario(path: Path) -> PatientScenario:
         raise ValueError(f"Patient prompt must contain a JSON object: {path}")
 
     expected_keys = {"system_prompts", "disease", "patient_type", "tests"}
-    if not expected_keys <= set(data) or set(data) - expected_keys - {"performance_profile"}:
+    optional_keys = {"performance_profile", "age", "gender"}
+    if not expected_keys <= set(data) or set(data) - expected_keys - optional_keys:
         raise ValueError(
-            f"Patient prompt must contain {sorted(expected_keys)} and optional performance_profile: {path}"
+            f"Patient prompt must contain {sorted(expected_keys)} and optional {sorted(optional_keys)}: {path}"
         )
 
     system_prompts = data["system_prompts"]
@@ -187,6 +188,24 @@ def load_patient_scenario(path: Path) -> PatientScenario:
         system_prompts = tuple(system_prompts)
     else:
         raise ValueError(f"system_prompts must be a string or string list: {path}")
+
+    demographics = []
+    if "age" in data:
+        age = data["age"]
+        if type(age) is not int or not 0 <= age <= 120:
+            raise ValueError(f"age must be an integer in years between 0 and 120: {path}")
+        demographics.append(f"Age: {age} years.")
+    if "gender" in data:
+        gender = data["gender"]
+        if not isinstance(gender, str) or not gender.strip():
+            raise ValueError(f"gender must be a non-empty string: {path}")
+        demographics.append(f"Gender: {gender.strip()}.")
+    if demographics:
+        persona_facts = "Fictional patient demographics: " + " ".join(demographics)
+        if isinstance(system_prompts, str):
+            system_prompts = f"{persona_facts}\n\n{system_prompts}"
+        else:
+            system_prompts = (persona_facts, *system_prompts)
 
     disease = data["disease"]
     if not isinstance(disease, str) or not disease.strip():
