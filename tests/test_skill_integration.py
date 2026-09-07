@@ -15,6 +15,17 @@ from src.skill_confirmation import SkillConfirmation
 
 
 class ToolSchemaTests(unittest.TestCase):
+    def test_pcr_exposes_covid_and_flu_without_antigen_substitution(self):
+        tool = next(tool for tool in _test_tools([])[0] if tool["name"] == "propose_targeted_pathogen_pcr")
+        self.assertEqual(tool["parameters"]["properties"]["target"]["enum"],
+                         ["SARS_CoV_2", "influenza_A_B", "respiratory_viral_panel"])
+        self.assertEqual(set(tool["parameters"]["required"]), {"specimen", "target"})
+        for phrase in ("COVID PCR", "flu PCR", "influenza PCR", "never substitute antigen"):
+            self.assertIn(phrase, tool["description"])
+        for phrase in ("one proposal", "does not cover every virus", "Do not split a panel",
+                       "clarify whether it is intended", "without upgrading to the broader panel"):
+            self.assertIn(phrase, tool["description"])
+
     def test_every_patient_gets_identical_neutral_stable_tools(self):
         empty_tools, mapping = _test_tools([])
         tools, other = _test_tools([Test("temperature", "37 C")])
@@ -66,6 +77,25 @@ class SkillIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.animator.metrics.discovered_tests, {})
         self.assertEqual(self.animator.skill_engine.score, 0)
         self.assertFalse(any(action["status"] == "completed" for action in self.animator.skill_engine.actions))
+
+    async def test_pcr_clarifies_before_confirmation_and_cancels_without_result(self):
+        with patch.object(self.animator, "confirm_skill", new=AsyncMock()) as confirm:
+            for parameters in ({}, {"specimen": "nasal_swab"}, {"target": "influenza_A_B"},
+                               {"target": "respiratory_viral_panel"}):
+                result = await _resolve_skill_call(
+                    self.call(json.dumps(parameters), "propose_targeted_pathogen_pcr"),
+                    _test_tools([])[1], self.animator,
+                )
+                self.assertEqual(result["status"], "clarification_required")
+            confirm.assert_not_awaited()
+        for target in ("SARS_CoV_2", "influenza_A_B", "respiratory_viral_panel"):
+            result = await self.resolve(self.call(
+                json.dumps({"specimen": "nasal_swab", "target": target}),
+                "propose_targeted_pathogen_pcr",
+            ), confirmed=False)
+            self.assertEqual(result["status"], "cancelled")
+        self.assertEqual(self.animator.metrics.discovered_tests, {})
+        self.assertEqual(self.animator.skill_engine.score, 0)
 
     async def test_only_explicit_confirmation_completes_and_repeats_do_not_farm(self):
         self.animator.add_transcript("You", "Please measure the temperature.")

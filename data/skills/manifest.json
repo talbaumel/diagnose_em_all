@@ -1091,14 +1091,23 @@
     "aliases": [
       "pathogen PCR",
       "targeted nucleic acid test",
-      "PCR for specified organism"
+      "PCR for specified organism",
+      "COVID PCR",
+      "COVID-19 PCR",
+      "SARS-CoV-2 PCR",
+      "flu PCR",
+      "influenza PCR",
+      "influenza A/B PCR",
+      "respiratory viral panel",
+      "multiplex respiratory PCR",
+      "cold virus panel"
     ],
     "examples": [
-      "Run PCR for the specified virus on the collected sample.",
-      "Request a targeted nucleic acid test for the suspected pathogen.",
-      "Test the specimen for the named organism by PCR."
+      "Do a COVID PCR on a nasal swab.",
+      "Please test a nasal swab for influenza A and B by PCR.",
+      "Run one respiratory viral PCR panel on a nasal swab."
     ],
-    "note": "Clarify the organism and sample. A named specific assay should route to its specific skill when available."
+    "note": "Clarify the target and specimen if missing; 'do PCR' alone is underspecified. COVID maps to SARS_CoV_2 and flu to influenza_A_B. An explicit respiratory viral panel maps to respiratory_viral_panel: one proposal, one nasal swab, covering SARS-CoV-2, influenza A/B, rhinovirus/enterovirus (combined, not distinguished), RSV, adenovirus, human metapneumovirus, parainfluenza 1-4 and seasonal coronaviruses 229E/NL63/OC43/HKU1. It does not cover every virus or any bacteria, including strep. For 'all cold viruses', explain this limited panel and clarify whether it is intended before proposing it. Do not split a panel into additional COVID/flu orders; if only COVID and flu are requested, keep those two targeted proposals, without upgrading to the broader panel. PCR is distinct from a rapid influenza antigen test; never substitute antigen testing or sequencing."
   },
   {
     "name": "Pathogen sequencing",

@@ -46,6 +46,7 @@ from src.conversation_runtime import ConversationRuntime, EvidencePresenter
 from src.game_ui import ChoiceMenu, chat_font, is_rtl, draw_spinner, wrap_text
 from src.patient_performance import PerformanceProfile
 from src.pokedex_ui import PokedexPanel
+from src.text_editing import TextEditing
 from src.consultation_review import (
     REVIEW_TIMEOUT_SECONDS,
     SCORE_AXES,
@@ -673,6 +674,7 @@ class PatientAnimator:
         self._consultation_finished = asyncio.Event()
         self._diagnosis_open = False
         self._diagnosis_input = ""
+        self._diagnosis_editing = TextEditing()
         self._diagnosis_feedback = ""
         self._diagnosis_focus = 0
         self._chat_was_focused = False
@@ -704,6 +706,7 @@ class PatientAnimator:
         self._microphone_available = True
         self._text_messages: asyncio.Queue[str] = asyncio.Queue()
         self._text_input = ""
+        self._text_editing = TextEditing()
         self._text_focused = False
         self._text_input_rect = pygame.Rect(18, 418, 386, 40)
         self._text_send_button = pygame.Rect(414, 418, 48, 40)
@@ -793,6 +796,7 @@ class PatientAnimator:
         self._focus_diagnosis(0)
 
     def _focus_diagnosis(self, focus: int) -> None:
+        self._diagnosis_editing.reset()
         self._diagnosis_focus = focus
         if focus == 0:
             pygame.key.start_text_input()
@@ -931,6 +935,7 @@ class PatientAnimator:
         self.add_transcript("You", message)
         self._sending = True
         self._text_input = ""
+        self._text_editing.reset()
 
     def add_transcript(self, speaker: str, text: str, item_id: str | None = None, *, append: bool = False) -> None:
         if not text:
@@ -994,6 +999,7 @@ class PatientAnimator:
             pygame.draw.rect(self._screen, UI_TEAL, (468, 300 + round(48 * fraction), 3, 16))
 
     def _set_text_focus(self, focused: bool) -> None:
+        self._text_editing.reset()
         focused = focused and not self._pokedex.open
         self._text_focused = focused
         self._push_to_talk.clear()
@@ -1247,6 +1253,8 @@ class PatientAnimator:
         previous_clip = self._screen.get_clip()
         self._screen.set_clip(input_area)
         input_rect = rendered_input.get_rect(midleft=(input_x, input_area.centery))
+        if self._text_focused and self._text_editing.selected_all:
+            pygame.draw.rect(self._screen, (193, 231, 215), input_rect)
         self._screen.blit(rendered_input, input_rect)
         if (
             self._text_focused
@@ -1297,6 +1305,8 @@ class PatientAnimator:
             position.right = area.right - 3
         previous_clip = self._screen.get_clip()
         self._screen.set_clip(area)
+        if self._diagnosis_focus == 0 and self._diagnosis_editing.selected_all:
+            pygame.draw.rect(self._screen, (193, 231, 215), position)
         self._screen.blit(text, position)
         if self._diagnosis_focus == 0 and int(time.monotonic() * 2) % 2 == 0:
             cursor_x = min(position.right + 2, area.right - 2) if self._diagnosis_input else area.x
@@ -1327,12 +1337,6 @@ class PatientAnimator:
                 self._close_diagnosis()
             elif self._diagnosis_focus in (0, 2):
                 self._submit_diagnosis()
-        elif self._diagnosis_focus == 0 and key == pygame.K_BACKSPACE:
-            self._diagnosis_input = self._diagnosis_input[:-1]
-            self._diagnosis_feedback = ""
-        elif self._diagnosis_focus == 0 and event.type == pygame.TEXTINPUT:
-            self._diagnosis_input += event.text
-            self._diagnosis_feedback = ""
         elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
             position = self._screen_position(event.pos)
             if self._diagnosis_input_rect.collidepoint(position):
@@ -1341,6 +1345,11 @@ class PatientAnimator:
                 self._close_diagnosis()
             elif self._diagnosis_submit_button.collidepoint(position):
                 self._submit_diagnosis()
+        elif self._diagnosis_focus == 0:
+            updated = self._diagnosis_editing.handle_event(event, self._diagnosis_input)
+            if updated is not None:
+                self._diagnosis_input = updated
+                self._diagnosis_feedback = self._diagnosis_editing.error
 
     def _draw_scene_fade(self) -> None:
         now = time.monotonic()
@@ -1773,13 +1782,15 @@ class PatientAnimator:
             self._transcript_scroll = max(0, self._transcript_scroll + event.y * 2)
         elif key in (pygame.K_PAGEUP, pygame.K_PAGEDOWN):
             self._transcript_scroll = max(0, self._transcript_scroll + (4 if key == pygame.K_PAGEUP else -4))
-        elif event.type == pygame.TEXTINPUT and self._text_focused:
-            self._text_input += event.text
-        elif self._text_focused and key is not None:
+        elif self._text_focused and event.type in (pygame.TEXTINPUT, pygame.KEYDOWN):
             if key in (pygame.K_RETURN, pygame.K_KP_ENTER):
                 self._submit_text()
-            elif key == pygame.K_BACKSPACE:
-                self._text_input = self._text_input[:-1]
+            else:
+                updated = self._text_editing.handle_event(event, self._text_input)
+                if updated is not None:
+                    self._text_input = updated
+                    if self._text_editing.error:
+                        self.add_transcript("Case", self._text_editing.error)
         elif key in (pygame.K_LSHIFT, pygame.K_RSHIFT) and self._microphone_available:
             self._push_to_talk.set()
         elif clicked:
@@ -1904,7 +1915,11 @@ async def _resolve_skill_call(
             result = engine.execute(proposal, tuple(animator._transcript))
             record["status"] = result["status"]
             if result["status"] == "completed":
-                animator.metrics.discover_test(result["name"], result["result"])
+                prior = animator.metrics.discovered_tests.get(result["name"])
+                if skill_id == "targeted_pathogen_pcr" and prior:
+                    animator.metrics.discovered_tests[result["name"]] = prior + "\n\n" + result["result"]
+                else:
+                    animator.metrics.discover_test(result["name"], result["result"])
             explanation = f"{result['result']}\n\nAppropriate use: {result.get('points', 0):+d}\n{result.get('rationale', '')}"
             evidence = Test(
                 result["name"], explanation, evidence_image=result.get("image_path"),

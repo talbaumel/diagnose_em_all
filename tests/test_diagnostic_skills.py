@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import mock_open, patch
 
 from src.diagnostic_skills import (
-    CONSENT, DATA, HISTORIES, ROOT, ScoringConfig, SkillEngine, load_catalog,
+    CONSENT, DATA, HISTORIES, PCR_COMPONENTS, ROOT, ScoringConfig, SkillEngine, load_catalog,
 )
 
 
@@ -94,6 +94,166 @@ class CatalogTests(unittest.TestCase):
             SkillEngine("unknown")
 
 
+class PCRTests(unittest.TestCase):
+    def test_panel_has_explicit_case_findings_and_a_defined_scope(self):
+        fixtures = json.loads((DATA / "cases.json").read_text())
+        for case in fixtures["case_order"]:
+            with self.subTest(case=case):
+                engine = SkillEngine(case)
+                result = perform(engine, "targeted_pathogen_pcr",
+                                 specimen="nasal_swab", target="respiratory_viral_panel")
+                self.assertEqual(result["status"], "completed")
+                self.assertEqual(result["points"], -1)
+                self.assertEqual(len(engine.actions), 1)
+                self.assertIn("does not test for every respiratory virus", result["result"])
+                self.assertIn("or for bacteria, including group A Streptococcus", result["result"])
+                self.assertIn("does not distinguish the two", result["result"])
+                for target in ("SARS-CoV-2", "Influenza A", "Influenza B", "RSV", "Adenovirus",
+                               "Human metapneumovirus", "Parainfluenza viruses 1-4",
+                               "Seasonal coronaviruses 229E, NL63, OC43 and HKU1"):
+                    self.assertIn(target + ":", result["result"])
+                detected = [line for line in result["result"].splitlines() if ": detected" in line]
+                expected = ("Rhinovirus/enterovirus:" if case == "COMMON_COLD_KID" else
+                            "Influenza A:" if case == "FEVERISH_PATIENT" else None)
+                self.assertEqual(len(detected), 1 if expected else 0)
+                if expected:
+                    self.assertTrue(detected[0].startswith(expected))
+
+    def test_panel_covers_followup_targeted_orders_and_repeats(self):
+        engine = SkillEngine("COMMON_COLD_KID")
+        turns = [("Patient", "My nose is runny and I have a cough.")]
+        panel = perform(engine, "targeted_pathogen_pcr", turns,
+                        specimen="nasal_swab", target="respiratory_viral_panel")
+        self.assertEqual(set(panel["new_units"]), PCR_COMPONENTS["respiratory_viral_panel"])
+        for target in PCR_COMPONENTS:
+            followup = perform(engine, "targeted_pathogen_pcr", turns,
+                               specimen="nasal_swab", target=target)
+            self.assertEqual(followup["status"], "duplicate")
+            self.assertEqual(followup["points"], 0)
+        self.assertEqual(engine.score, -1)
+        self.assertEqual(sum(action["status"] == "completed" for action in engine.actions), 1)
+
+    def test_panel_after_targeted_tests_only_adds_uncovered_components(self):
+        for initial in (("SARS_CoV_2",), ("influenza_A_B",), ("SARS_CoV_2", "influenza_A_B")):
+            with self.subTest(initial=initial):
+                engine = SkillEngine("COMMON_COLD_KID")
+                turns = [("Patient", "My nose is runny and I have a cough.")]
+                covered = set()
+                for target in initial:
+                    perform(engine, "targeted_pathogen_pcr", turns,
+                            specimen="nasal_swab", target=target)
+                    covered.update(PCR_COMPONENTS[target])
+                panel = perform(engine, "targeted_pathogen_pcr", turns,
+                                specimen="nasal_swab", target="respiratory_viral_panel")
+                self.assertEqual(set(panel["new_units"]), PCR_COMPONENTS["respiratory_viral_panel"] - covered)
+                self.assertEqual(panel["points"], -1)
+                self.assertEqual(engine.score, len(initial) - 1)
+                repeat = perform(engine, "targeted_pathogen_pcr", turns,
+                                 specimen="nasal_swab", target="respiratory_viral_panel")
+                self.assertEqual(repeat["status"], "duplicate")
+                self.assertEqual(engine.score, len(initial) - 1)
+
+    def test_cancelled_panel_does_not_cover_or_charge_targeted_pcr(self):
+        engine = SkillEngine("COMMON_COLD_KID")
+        turns = [("Patient", "My nose is runny and I have a cough.")]
+        proposal = engine.prepare("targeted_pathogen_pcr",
+                                  {"specimen": "nasal_swab", "target": "respiratory_viral_panel"}, turns)
+        self.assertEqual(engine.actions, [])
+        self.assertNotIn("points", proposal)
+        engine.cancel(proposal)
+        result = perform(engine, "targeted_pathogen_pcr", turns,
+                         specimen="nasal_swab", target="SARS_CoV_2")
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(engine.score, 1)
+
+    def test_incomplete_panel_relevance_fails_instead_of_borrowing_targeted_credit(self):
+        fixtures = json.loads((DATA / "cases.json").read_text())
+        catalog = load_catalog()
+        fixtures["rows"]["targeted_pathogen_pcr"]["target_relevance"]["respiratory_viral_panel"] = []
+        with patch("src.diagnostic_skills.json.loads", return_value=fixtures), patch(
+            "src.diagnostic_skills.load_catalog", return_value=catalog
+        ):
+            with self.assertRaisesRegex(ValueError, "Incomplete explicit PCR relevance"):
+                SkillEngine("COMMON_COLD_KID")
+
+    def test_both_targets_have_explicit_results_for_every_case(self):
+        fixtures = json.loads((DATA / "cases.json").read_text())
+        for case in fixtures["case_order"]:
+            for target in ("SARS_CoV_2", "influenza_A_B"):
+                with self.subTest(case=case, target=target):
+                    result = perform(SkillEngine(case), "targeted_pathogen_pcr",
+                                     specimen="nasal_swab", target=target)
+                    self.assertEqual(result["status"], "completed")
+                    self.assertIsNone(result["image_path"])
+                    if target == "SARS_CoV_2":
+                        self.assertIn("SARS-CoV-2 PCR is not detected", result["result"])
+                    elif case == "FEVERISH_PATIENT":
+                        self.assertIn("influenza A detected; influenza B not detected", result["result"])
+                    else:
+                        self.assertIn("influenza A not detected; influenza B not detected", result["result"])
+
+    def test_cold_targets_score_separately_but_repeats_do_not(self):
+        engine = SkillEngine("COMMON_COLD_KID")
+        turns = [("Patient", "My nose is runny and I have a cough.")]
+        for target in ("SARS_CoV_2", "influenza_A_B"):
+            proposal = engine.prepare("targeted_pathogen_pcr",
+                                      {"specimen": "nasal_swab", "target": target}, turns)
+            before = engine.score
+            result = engine.execute(proposal, turns)
+            self.assertEqual(result["points"], 1)
+            self.assertEqual(engine.score, before + 1)
+            repeat = perform(engine, "targeted_pathogen_pcr", turns,
+                             specimen="nasal_swab", target=target)
+            self.assertEqual(repeat["status"], "duplicate")
+            self.assertEqual(repeat["points"], 0)
+            self.assertEqual(engine.score, before + 1)
+        self.assertEqual(engine.score, 2)
+
+    def test_missing_case_target_outcome_fails_explicitly(self):
+        fixtures = json.loads((DATA / "cases.json").read_text())
+        catalog = load_catalog()
+        fixtures["rows"]["targeted_pathogen_pcr"]["target_outcomes"]["influenza_A_B"] = []
+        with patch("src.diagnostic_skills.json.loads", return_value=fixtures), patch(
+            "src.diagnostic_skills.load_catalog", return_value=catalog
+        ):
+            with self.assertRaisesRegex(ValueError, "Incomplete explicit PCR"):
+                SkillEngine("COMMON_COLD_KID")
+
+    def test_no_hindsight_credit_or_cancellation_charge(self):
+        engine = SkillEngine("COMMON_COLD_KID")
+        parameters = {"specimen": "nasal_swab", "target": "influenza_A_B"}
+        proposal = engine.prepare("targeted_pathogen_pcr", parameters, ())
+        self.assertEqual(engine.actions, [])
+        engine.cancel(proposal)
+        self.assertEqual(engine.score, 0)
+        result = perform(engine, "targeted_pathogen_pcr", **parameters)
+        self.assertEqual(result["points"], 0)
+        self.assertEqual(result["appropriateness"], "insufficient_evidence")
+
+    def test_flu_antigen_and_pcr_share_budget_not_covid_target(self):
+        engine = SkillEngine("FEVERISH_PATIENT")
+        turns = [("Patient", "I have fever, body aches and a cough.")]
+        antigen = perform(engine, "rapid_influenza_test", turns)
+        flu = perform(engine, "targeted_pathogen_pcr", turns,
+                      specimen="nasal_swab", target="influenza_A_B")
+        covid = perform(engine, "targeted_pathogen_pcr", turns,
+                        specimen="nasal_swab", target="SARS_CoV_2")
+        self.assertEqual(flu["status"], "completed")
+        self.assertIn("influenza A detected", flu["result"])
+        self.assertEqual(antigen["points"] + flu["points"], 2)
+        self.assertEqual(covid["points"], 1)
+
+    def test_unnecessary_distinct_targets_each_charge_once(self):
+        engine = SkillEngine("SPRAINED_ANKLE_ATHLETE")
+        turns = [("Patient", "I twisted my ankle.")]
+        for target in ("SARS_CoV_2", "influenza_A_B"):
+            for expected in (-1, 0):
+                result = perform(engine, "targeted_pathogen_pcr", turns,
+                                 specimen="nasal_swab", target=target)
+                self.assertEqual(result["points"], expected)
+        self.assertEqual(engine.score, -2)
+
+
 class ProposalTests(unittest.TestCase):
     def setUp(self):
         self.engine = SkillEngine("ANXIOUS_ADULT")
@@ -120,7 +280,10 @@ class ProposalTests(unittest.TestCase):
             ("electrocardiogram", {"consent": True}),
             ("electrocardiogram", []),
             ("inflammatory_markers", {"marker": "ESR_and_CRP"}),
-            ("targeted_pathogen_pcr", {"specimen": "nasal_swab", "target": "influenza"}),
+            ("targeted_pathogen_pcr", {"specimen": "nasal_swab", "target": "RSV"}),
+            ("targeted_pathogen_pcr", {"specimen": "nasal_swab"}),
+            ("targeted_pathogen_pcr", {"target": "influenza_A_B"}),
+            ("targeted_pathogen_pcr", {"specimen": "blood", "target": "influenza_A_B"}),
         ]:
             with self.subTest(skill=skill, parameters=parameters):
                 with self.assertRaises(ValueError):

@@ -88,6 +88,56 @@ class SkillRuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.animator.handle_event(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_TAB), self.stop)
         self.animator.handle_event(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_RETURN), self.stop)
 
+    async def test_cold_covid_and_flu_pcr_batch_confirms_and_reports_each_target(self):
+        self.animator.add_transcript("Patient", "I have a runny nose and a cough.")
+        self.animator.add_transcript("You", "Run COVID and flu PCR tests on nasal swabs.")
+        await self.begin()
+        calls = []
+        for target in ("SARS_CoV_2", "influenza_A_B"):
+            call = self.call(target, "propose_targeted_pathogen_pcr")
+            call["arguments"] = json.dumps({"specimen": "nasal_swab", "target": target})
+            calls.append(call)
+        self.done(calls)
+        for count, target in enumerate(("SARS_CoV_2", "influenza_A_B")):
+            await until(lambda: self.animator._skill_confirmation is not None)
+            self.assertEqual(len(self.animator.skill_engine.actions), count)
+            self.decide(True)
+            await until(lambda: self.animator.evidence_open)
+            self.assertEqual(self.animator.skill_engine.actions[-1]["parameters"]["target"], target)
+            self.animator.close_test_result()
+        await until(lambda: len(self.sent("response.create")) == 2)
+        self.assertEqual([result["status"] for _, result in self.outputs()], ["completed", "completed"])
+        self.assertEqual(self.animator.skill_engine.score, 2)
+        findings = self.animator._pokedex_context()["discovered_tests"]
+        self.assertEqual(len(findings), 1)
+        self.assertIn("SARS-CoV-2 PCR is not detected", findings[0]["result"])
+        self.assertIn("influenza A not detected", findings[0]["result"])
+        self.assertIn("influenza B not detected", findings[0]["result"])
+
+    async def test_one_panel_call_is_one_confirmation_result_and_charge(self):
+        self.animator.add_transcript("Patient", "My nose is runny and I have a cough.")
+        self.animator.add_transcript("You", "Run one respiratory viral PCR panel on a nasal swab.")
+        await self.begin()
+        call = self.call("panel", "propose_targeted_pathogen_pcr")
+        call["arguments"] = json.dumps({"specimen": "nasal_swab", "target": "respiratory_viral_panel"})
+        self.done([call])
+        await until(lambda: self.animator._skill_confirmation is not None)
+        self.assertEqual(self.animator.skill_engine.actions, [])
+        self.decide(True)
+        await until(lambda: self.animator.evidence_open)
+        self.animator.draw()
+        self.assertIn("Rhinovirus/enterovirus: detected", self.animator._test_result.results)
+        self.animator.close_test_result()
+        await until(lambda: len(self.sent("response.create")) == 2)
+        self.assertIsNone(self.animator._skill_confirmation)
+        self.assertEqual(len(self.animator.skill_engine.actions), 1)
+        self.assertEqual(self.animator.skill_engine.score, -1)
+        self.assertEqual([result["status"] for _, result in self.outputs()], ["completed"])
+        findings = self.animator._pokedex_context()["discovered_tests"]
+        self.assertEqual(len(findings), 1)
+        self.assertIn("Rhinovirus/enterovirus: detected", findings[0]["result"])
+        self.assertIn("Influenza A: not detected", findings[0]["result"])
+
     async def test_terminal_batch_waits_for_processed_speech_and_skips_cue(self):
         await self.begin()
         pcm = b"\1\0" * 2400

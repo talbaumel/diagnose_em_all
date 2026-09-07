@@ -6,6 +6,7 @@ import pygame
 
 from src.care_plan import REFERRAL_URGENCIES, Prescription, Referral
 from src.game_ui import wrap_text
+from src.text_editing import TextEditing
 
 
 class CareOrderForm:
@@ -14,6 +15,7 @@ class CareOrderForm:
             raise ValueError("Unknown care order type")
         self.kind = kind
         self.values = ["", "", "" if kind == "prescription" else "Routine"]
+        self.editing = TextEditing()
         self.labels = ("Medication", "Directions (dose, route, frequency)", "Reason") if kind == "prescription" else ("Referral destination", "Reason", "Urgency")
         self.fields = tuple(pygame.Rect(48, 132 + index * 66, 384, 38) for index in range(3))
         self.cancel_button = pygame.Rect(48, 366, 140, 36)
@@ -28,6 +30,7 @@ class CareOrderForm:
         self.focus(0)
 
     def focus(self, index: int) -> None:
+        self.editing.reset()
         self.focus_index = index
         if 0 <= index < 3 and not (self.kind == "referral" and index == 2):
             pygame.key.start_text_input()
@@ -67,12 +70,10 @@ class CareOrderForm:
             index = REFERRAL_URGENCIES.index(self.values[2])
             self.values[2] = REFERRAL_URGENCIES[(index + (1 if key == pygame.K_RIGHT else -1)) % 3]
         elif 0 <= self.focus_index < 3 and not (self.kind == "referral" and self.focus_index == 2):
-            if event.type == pygame.TEXTINPUT:
-                self.values[self.focus_index] += event.text
-                self.error = ""
-            elif key == pygame.K_BACKSPACE:
-                self.values[self.focus_index] = self.values[self.focus_index][:-1]
-                self.error = ""
+            updated = self.editing.handle_event(event, self.values[self.focus_index])
+            if updated is not None:
+                self.values[self.focus_index] = updated
+                self.error = self.editing.error
         if event.type == pygame.MOUSEBUTTONUP and event.button == 1:
             position = (event.pos[0] * 480 / window_size[0], event.pos[1] * 480 / window_size[1])
             if self.cancel_button.collidepoint(position):
@@ -119,6 +120,8 @@ class CareOrderForm:
                 position.right = area.right - 3
             previous_clip = screen.get_clip()
             screen.set_clip(area)
+            if self.focus_index == index and self.editing.selected_all:
+                pygame.draw.rect(screen, (193, 231, 215), position)
             screen.blit(rendered, position)
             if self.focus_index == index and int(time.monotonic() * 2) % 2 == 0:
                 cursor = min(position.right + 2, area.right - 2)

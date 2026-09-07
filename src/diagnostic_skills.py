@@ -104,6 +104,17 @@ EXCHANGE = {
                    "Do not cite a request to do a future history or diary.",
 }
 
+PCR_COMPONENTS = {
+    "SARS_CoV_2": frozenset({"nasal_PCR_SARS_CoV_2"}),
+    "influenza_A_B": frozenset({"nasal_PCR_influenza_A_B"}),
+    "respiratory_viral_panel": frozenset({
+        "nasal_PCR_SARS_CoV_2", "nasal_PCR_influenza_A_B",
+        "nasal_PCR_rhinovirus_enterovirus", "nasal_PCR_RSV",
+        "nasal_PCR_adenovirus", "nasal_PCR_metapneumovirus",
+        "nasal_PCR_parainfluenza_1_4", "nasal_PCR_seasonal_coronaviruses",
+    }),
+}
+
 # These are the only modeled variants. Broad requests require clarification;
 # specifying an unsupported variant never silently substitutes a different test.
 FIELDS = {
@@ -146,7 +157,8 @@ FIELDS = {
     "microbiome_profiling_research": {"specimen": _enum("stool")},
     "sample_culture": {"specimen": _enum("urine"), "organism_class": _enum("bacteria")},
     "antibiotic_susceptibility": {"specimen": _enum("bacterial_isolate")},
-    "targeted_pathogen_pcr": {"specimen": _enum("nasal_swab"), "target": _enum("SARS_CoV_2")},
+    "targeted_pathogen_pcr": {"specimen": _enum("nasal_swab"),
+                            "target": _enum(*PCR_COMPONENTS)},
     "pathogen_sequencing": {"specimen": _enum("bacterial_isolate")},
     "sleep_study": {"method": _enum("laboratory_polysomnography")},
     "viral_metagenomic_sequencing": {"specimen": _enum("nasal_swab"), "workflow": _enum("DNA", "RNA", "DNA_and_RNA")},
@@ -429,6 +441,25 @@ class SkillEngine:
                 raise ValueError(f"Missing appropriateness class for {skill_id}.")
             self._case[skill_id] = {"result": row["results"][row["outcomes"][index]],
                                    "relevance": row["relevance"][index]}
+        pcr = rows["targeted_pathogen_pcr"]
+        targets = pcr["target_outcomes"]
+        relevance = pcr["target_relevance"]
+        if set(targets) != set(PCR_COMPONENTS) or set(relevance) != set(targets):
+            raise ValueError("Every PCR target requires explicit case outcomes and relevance.")
+        self._pcr_case: dict[str, dict[str, str]] = {}
+        for target, outcomes in targets.items():
+            if len(outcomes) != len(fixtures["case_order"]) or any(
+                outcome not in pcr["results"] for outcome in outcomes
+            ):
+                raise ValueError(f"Incomplete explicit PCR outcomes for {target}.")
+            if len(relevance[target]) != len(fixtures["case_order"]) or any(
+                code not in fixtures["classes"] for code in relevance[target]
+            ):
+                raise ValueError(f"Incomplete explicit PCR relevance for {target}.")
+            self._pcr_case[target] = {
+                "result": pcr["results"][outcomes[index]],
+                "relevance": relevance[target][index],
+            }
         self._actions: list[dict[str, Any]] = []
         self._prepared: dict[str, tuple[dict[str, Any], tuple[tuple[str, str], ...]]] = {}
         self._executed_proposals: set[str] = set()
@@ -554,10 +585,15 @@ class SkillEngine:
             raise ValueError("Histopathology requires the previously collected skin punch specimen; order and confirm biopsy first.")
         return skill
 
+    def _case_entry(self, skill_id: str, parameters: dict[str, Any]) -> dict[str, str]:
+        if skill_id == "targeted_pathogen_pcr":
+            return self._pcr_case[parameters["target"]]
+        return self._case[skill_id]
+
     def prepare(self, skill_id: str, parameters: dict[str, Any], transcript: Transcript) -> dict[str, Any]:
         turns = _transcript(transcript)
         skill = self._check(skill_id, parameters, turns)
-        entry = self._case[skill_id]
+        entry = self._case_entry(skill_id, parameters)
         proposal = {"proposal_id": secrets.token_hex(16), "skill_id": skill.id,
                     "name": skill.name, "parameters": copy.deepcopy(parameters),
                     "requires_confirmation": True,
@@ -567,8 +603,10 @@ class SkillEngine:
         self._prepared[proposal["proposal_id"]] = (copy.deepcopy(proposal), turns)
         return proposal
 
-    def _points(self, skill_id: str, transcript: tuple[tuple[str, str], ...]) -> tuple[int, str, str]:
-        relevance = self._case[skill_id]["relevance"]
+    def _points(self, skill_id: str, transcript: tuple[tuple[str, str], ...],
+                parameters: dict[str, Any]) -> tuple[int, str, str]:
+        entry = self._case_entry(skill_id, parameters)
+        relevance = entry["relevance"]
         patient_texts = [text for role, text in transcript if role == "patient"]
         known = any(_affirmed(text, CASE_CUES[self.patient_type]) for text in patient_texts)
         # Objective completed examinations can establish the problem independently
@@ -585,6 +623,12 @@ class SkillEngine:
         if relevance == "B":
             return self.scoring.alternative, "Reasonable low-burden baseline assessment; not a mandatory test.", "baseline"
         if relevance == "U":
+            if skill_id == "targeted_pathogen_pcr" and parameters["target"] == "respiratory_viral_panel":
+                return self.scoring.unnecessary, (
+                    "Broad respiratory viral panel is available, but this uncomplicated fictional "
+                    "presentation does not establish a need for its breadth; a positive result "
+                    "does not retroactively justify the order."
+                ), "unnecessary"
             return self.scoring.unnecessary, "Available fictional result, but no indication in this case; avoid unnecessary testing.", "unnecessary"
         if relevance in {"I", "A"}:
             if not known:
@@ -619,7 +663,7 @@ class SkillEngine:
             if known and indicated:
                 return self.scoring.indicated, "Conditional indication is present in actual patient evidence. " + reason, "conditional"
             return self.scoring.unnecessary, "Condition not established at confirmed order. " + reason, "unnecessary"
-        return 0, self._case[skill_id]["result"], "unavailable"
+        return 0, entry["result"], "unavailable"
 
     def _record(self, skill_id: str, status: str, result: str, rationale: str,
                 parameters: dict[str, Any], points: int = 0, **context: Any) -> dict[str, Any]:
@@ -631,7 +675,7 @@ class SkillEngine:
 
     def _result(self, skill_id: str, parameters: dict[str, Any],
                 turns: tuple[tuple[str, str], ...]) -> tuple[str, str | None, list[dict[str, Any]]]:
-        result = self._case[skill_id]["result"]
+        result = self._case_entry(skill_id, parameters)["result"]
         image_path = None
         reviewed = []
         if skill_id in HISTORIES:
@@ -676,7 +720,7 @@ class SkillEngine:
             raise ValueError("Transcript snapshot changed; prepare the proposal again.")
         skill_id, parameters = proposal["skill_id"], proposal["parameters"]
         self._check(skill_id, parameters, turns)
-        entry = self._case[skill_id]
+        entry = self._case_entry(skill_id, parameters)
         if entry["relevance"] == "N":
             self._executed_proposals.add(proposal["proposal_id"])
             return self._record(skill_id, "unavailable", entry["result"], entry["result"], parameters)
@@ -687,14 +731,19 @@ class SkillEngine:
             workflow = parameters["workflow"]
             units = {f"nasal_viral_{molecule}" for molecule in ("DNA", "RNA")
                      if workflow == "DNA_and_RNA" or workflow == molecule}
+        if skill_id == "targeted_pathogen_pcr":
+            units = PCR_COMPONENTS[parameters["target"]]
         if units <= self._units:
             self._executed_proposals.add(proposal["proposal_id"])
             return self._record(skill_id, "duplicate", "Already completed; no new test or score.",
                                 "Duplicate or fully covered component of a completed order.", parameters,
                                 covered_units=sorted(units))
         result, image_path, reviewed = self._result(skill_id, parameters, turns)
-        points, rationale, appropriateness = self._points(skill_id, turns)
+        points, rationale, appropriateness = self._points(skill_id, turns, parameters)
         goal = GOALS.get(skill_id, skill_id)
+        if skill_id == "targeted_pathogen_pcr":
+            goal = ("rapid_influenza_test" if parameters["target"] == "influenza_A_B"
+                    else f"{skill_id}_{parameters['target']}")
         if skill_id in {"urinalysis", "sample_culture"} and self.patient_type == "ECCENTRIC_NEIGHBOR":
             goal = "original_compound_urine_assessment"
         if points > 0:

@@ -119,6 +119,10 @@ reset the full campaign.
 - Move with arrow keys or WASD; press Enter near a highlighted patient.
 - Enter Pediatrics and the Diagnostics Lab through their corridor doors.
 - Hold either Shift key to speak. Click the text field and press Enter to type.
+- In chat, diagnosis, care-plan text fields and Dragon Copilot, use Cmd+V on
+  macOS (Ctrl+V elsewhere) to paste. Cmd/Ctrl+A selects the whole field;
+  Cmd/Ctrl+C copies and Cmd/Ctrl+X cuts the selection. Pasted line breaks become
+  spaces; pasting never sends a message, submits a diagnosis or orders a test.
 - Interview the patient in the diagnosis battle and request skills from the shared catalog.
 - Submit the correct diagnosis, discuss the care plan, then choose Finish Visit to complete the case.
 - Help patient 01 to unlock the Patient Ward.
@@ -473,6 +477,33 @@ illustration. Its nasal DNA, RNA and combined workflows have authored simulated
 results and are unnecessary for these simple current cases; DNA-only results never
 exclude RNA infection. Sequencing is simulated: there are no sequencing services, uploads,
 or real clinical orders. Microbiome profiling is research-only.
+
+Targeted nasal PCR supports SARS-CoV-2 and influenza A/B for every patient,
+including the common-cold kid. Say "Do a COVID PCR on a nasal swab" or "Please
+test a nasal swab for influenza A and B by PCR." Asking for both produces two
+separately confirmed proposals; "do PCR" alone needs target/specimen clarification.
+The cold case has authored negative results for both; the influenza case has
+influenza A detected. These are simulated findings, not sequencing or antigen
+tests. Each PCR target is tracked independently for repeats and results; influenza
+PCR and rapid influenza antigen testing share a positive reward budget, while
+COVID and influenza investigations remain separate. Existing evidence-at-order
+scoring rules still apply; PCR is available, not a mandatory cold workup.
+
+For one broader test, say **"Run one respiratory viral PCR panel on a nasal
+swab."** This is one confirmed order under the PCR skill, covering SARS-CoV-2,
+influenza A/B, rhinovirus/enterovirus (combined), RSV, adenovirus, human
+metapneumovirus, parainfluenza 1-4 and seasonal coronaviruses
+229E/NL63/OC43/HKU1. It does **not** cover every cold virus or bacteria such as
+group A Streptococcus, and it is not sequencing. The cold case's authored panel
+detects rhinovirus/enterovirus; the influenza case detects influenza A.
+Each report lists the covered targets and interpretation limits.
+
+The broad panel remains performable but scores as unnecessary (-1) in the
+current uncomplicated cases, rather than rewarding its positive result in
+hindsight. It is one action, not a separate charge per virus. Completed panel
+components cover subsequent COVID/flu PCR requests without additional
+execution or points. A panel after targeted PCR only adds the remaining
+components; repeats add nothing. Restart an already-running game to load changes.
 
 ### Deferred live playtest
 
