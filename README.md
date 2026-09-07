@@ -140,6 +140,33 @@ reset the full campaign.
   Cmd/Ctrl+C copies and Cmd/Ctrl+X cuts the selection. Pasted line breaks become
   spaces; pasting never sends a message, submits a diagnosis or orders a test.
 - Interview the patient in the diagnosis battle and request skills from the shared catalog.
+- Click the **drawer under the sink, behind and to the left of the doctor** (or
+  press **F7**) to open the equipment drawer. Pick up a **thermometer** (mouth),
+  **pulse oximeter** (finger), **stethoscope** (chest/lung examination), or
+  **otoscope** (ear). Instruments stay in the drawer, not permanently on the screen.
+  The drawer supports scrolling and paging as more instruments are added.
+  Escape, F7, or Close shuts it without performing a procedure.
+  You can also select **Temperature -> Use thermometer** in the skill browser,
+  or say **"measure temperature"** to start the same hands-on activity directly.
+  Click or drag the instrument's contact point to its highlighted body target,
+  then let the 2.5-second activity finish. Keyboard: Enter picks up,
+  Tab aims at the target (arrows also move it), and Enter places it. Escape or
+  Cancel abandons the activity; losing window focus resets unfinished placement.
+  Voice/text requests for these four skills use the same activities instead of instant execution.
+  Only a completed measurement reveals the authored case result and goes through
+  existing appropriate-use scoring; misses/cancellations earn nothing and repeats
+  cannot farm points. The original thermometer evidence remains authoritative.
+  This is a simplified educational interaction, not a real-world procedure guide.
+  The short placement activities represent simplified examinations, not complete
+  clinical technique. Other catalog entries retain their existing request workflows.
+- Click the **bottom drawer of the tall cabinet between the doctor and the patient**
+  (or press **F8**) for **advanced-test request forms**: laboratory tests, imaging,
+  pathology, genetics, and other specialist investigations. Select a form to read
+  its details, then **Draft request**; nothing is sent or performed automatically.
+  Send the draft to discuss required specimens, targets, consent, or other
+  prerequisites before confirmation. These are forms, not machines stored in a
+  drawer. Escape backs out and F8 closes the drawer. **F5** still browses all skills,
+  including histories and examinations that do not use these drawers.
 - Submit the correct diagnosis, discuss the care plan, then choose Finish Visit to complete the case.
 - Help patient 01 to unlock the Patient Ward.
 - Help patient 02 to unlock the Pharmacy Lounge.

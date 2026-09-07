@@ -20,7 +20,11 @@ from src.hospital_game import load_patient_scenario
 from src.audio_playback import AudioPlaybackError
 from src.care_plan import Prescription, Referral
 from src.consultation_review import AxisScore, ConsultationScorecard, SCORE_AXES
-from src.diagnostic_skills import load_catalog
+from src.diagnostic_skills import SkillEngine, load_catalog
+from src.skill_activity import ThermometerActivity
+from src.skill_browser import ADVANCED_TEST_IDS, AdvancedTestDrawer, EquipmentDrawer
+from src.skill_activity import SUPPORTED_ACTIVITIES
+from tests.audio_fakes import until
 from src.patient_celebration import CELEBRATION_SECONDS
 from tools.preview_performance import RecordingSink
 from src.realtime_conversation import CONSULTATION_PLAYER_DIRECTION_ROW, ConversationResult, PatientAnimator, PatientType, Test, _conversation_session, _diagnosis_matches, _run_conversation, _show_consultation_review, strat_conversation
@@ -76,6 +80,119 @@ class ConversationUITests(unittest.TestCase):
 
     def key(self, value):
         self.animator.handle_event(pygame.event.Event(pygame.KEYDOWN, key=value), self.stop)
+
+    def test_room_drawer_opens_before_picking_up_thermometer(self):
+        self.animator.skill_engine = SkillEngine("COMMON_COLD_KID", [])
+        self.animator._text_input = "Unsent interview question"
+        self.animator._set_text_focus(True)
+        self.animator.draw()
+        x, y = self.animator._equipment_drawer_hotspot.center
+        self.animator.handle_event(
+            pygame.event.Event(pygame.MOUSEBUTTONUP, button=1, pos=(x * 1.5, y * 1.5)), self.stop,
+        )
+        self.assertIsInstance(self.animator._skill_browser, EquipmentDrawer)
+        self.assertEqual({s.id for s in self.animator._skill_browser.catalog}, SUPPORTED_ACTIVITIES)
+        self.assertTrue(self.animator._local_skill_requests.empty())
+        self.assertEqual(self.animator.skill_engine.actions, [])
+        self.key(pygame.K_RETURN)
+        self.key(pygame.K_F7)
+        self.key(pygame.K_F2)
+        self.assertEqual(self.animator._local_skill_requests.qsize(), 1)
+        self.assertEqual(self.animator._local_skill_requests.get_nowait(), "temperature")
+        self.assertFalse(self.animator._diagnosis_open)
+        self.assertTrue(self.animator.skills_modal)
+        self.assertTrue(self.animator._local_skill_chat_was_focused)
+        self.assertEqual(self.animator._text_input, "Unsent interview question")
+        self.assertTrue(self.animator._text_messages.empty())
+
+    def test_drawer_closes_without_action_and_restores_draft(self):
+        self.animator.skill_engine = SkillEngine("COMMON_COLD_KID", [])
+        self.animator._text_input = "Unsent draft"
+        self.animator._set_text_focus(True)
+        for close_key in (pygame.K_ESCAPE, pygame.K_F7):
+            self.key(pygame.K_F7)
+            self.assertIsInstance(self.animator._skill_browser, EquipmentDrawer)
+            self.assertFalse(self.animator.push_to_talk)
+            self.key(close_key)
+            self.assertIsNone(self.animator._skill_browser)
+            self.assertTrue(self.animator._text_focused)
+        self.assertEqual(self.animator._text_input, "Unsent draft")
+        self.assertEqual(self.animator.skill_engine.actions, [])
+        self.assertTrue(self.animator._local_skill_requests.empty())
+
+    def test_old_floating_thermometer_is_gone_and_drawer_only_highlights_on_hover(self):
+        self.animator.skill_engine = SkillEngine("COMMON_COLD_KID", [])
+        before = pygame.image.tobytes(self.animator._screen, "RGB")
+        self.animator._draw_equipment_drawer_hint()
+        self.assertEqual(pygame.image.tobytes(self.animator._screen, "RGB"), before)
+        self.animator.handle_event(
+            pygame.event.Event(pygame.MOUSEBUTTONUP, button=1, pos=(90 * 1.5, 103 * 1.5)), self.stop,
+        )
+        self.assertIsNone(self.animator._skill_browser)
+        x, y = self.animator._equipment_drawer_hotspot.center
+        self.animator.handle_event(
+            pygame.event.Event(pygame.MOUSEMOTION, pos=(x * 1.5, y * 1.5)), self.stop,
+        )
+        self.assertTrue(self.animator._drawer_hovered)
+        self.animator._draw_equipment_drawer_hint()
+        self.assertNotEqual(pygame.image.tobytes(self.animator._screen, "RGB"), before)
+        self.animator.handle_event(pygame.event.Event(pygame.WINDOWLEAVE), self.stop)
+        self.assertFalse(self.animator._drawer_hovered)
+
+    def test_temperature_catalog_uses_instrument_without_sending_draft(self):
+        self.animator.skill_engine = SkillEngine("COMMON_COLD_KID", [])
+        self.animator._text_input = "Draft"
+        self.key(pygame.K_F5)
+        browser = self.animator._skill_browser
+        browser.selected = next(i for i, skill in enumerate(browser.catalog) if skill.id == "temperature")
+        self.key(pygame.K_RETURN)
+        self.key(pygame.K_RETURN)
+        self.assertIsNone(self.animator._skill_browser)
+        self.assertEqual(self.animator._local_skill_requests.get_nowait(), "temperature")
+        self.assertEqual(self.animator._text_input, "Draft")
+        self.assertTrue(self.animator._text_messages.empty())
+
+    def test_advanced_room_drawer_drafts_request_without_ordering_or_losing_text(self):
+        self.animator.skill_engine = SkillEngine("COMMON_COLD_KID", [])
+        self.animator._text_input = "Existing question."
+        self.animator._set_text_focus(True)
+        self.assertFalse(self.animator._equipment_drawer_hotspot.colliderect(self.animator._advanced_drawer_hotspot))
+        x, y = self.animator._advanced_drawer_hotspot.center
+        self.animator.handle_event(
+            pygame.event.Event(pygame.MOUSEBUTTONUP, button=1, pos=(x * 1.5, y * 1.5)), self.stop,
+        )
+        browser = self.animator._skill_browser
+        self.assertIsInstance(browser, AdvancedTestDrawer)
+        self.assertEqual({s.id for s in browser.catalog}, ADVANCED_TEST_IDS)
+        self.assertFalse(self.animator.push_to_talk)
+        browser.selected = next(i for i, s in enumerate(browser.catalog) if s.id == "targeted_pathogen_pcr")
+        self.key(pygame.K_RETURN)
+        self.animator.draw()
+        self.key(pygame.K_RETURN)
+        self.assertIsNone(self.animator._skill_browser)
+        self.assertTrue(self.animator._text_input.startswith("Existing question. "))
+        self.assertTrue(self.animator._text_focused)
+        self.assertTrue(self.animator._text_messages.empty())
+        self.assertTrue(self.animator._local_skill_requests.empty())
+        self.assertEqual(self.animator.skill_engine.actions, [])
+        self.key(pygame.K_F8)
+        self.assertIsInstance(self.animator._skill_browser, AdvancedTestDrawer)
+        self.key(pygame.K_F8)
+        self.assertIsNone(self.animator._skill_browser)
+
+    def test_instrument_cannot_start_while_connecting_or_after_finish(self):
+        self.animator.skill_engine = SkillEngine("COMMON_COLD_KID", [])
+        self.animator._ready = False
+        self.key(pygame.K_F7)
+        self.animator._request_local_skill("temperature")
+        self.assertTrue(self.animator._local_skill_requests.empty())
+        self.assertIsNone(self.animator._skill_browser)
+        self.animator._ready = True
+        self.animator._diagnosis_confirmed.set()
+        self.animator._finish_consultation()
+        self.key(pygame.K_F7)
+        self.assertTrue(self.animator._local_skill_requests.empty())
+        self.assertIsNone(self.animator._skill_browser)
 
     def test_dr_ash_faces_patient_during_consultation(self):
         self.assertEqual(CONSULTATION_PLAYER_DIRECTION_ROW, 2)
@@ -765,6 +882,79 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncTearDown(self):
         pygame.quit()
+
+    async def test_connected_session_routes_scaled_mouse_thermometer_and_ignores_late_voice(self):
+        scenario = load_patient_scenario(ROOT / "data/prompts/01_common_cold_kid.json")
+        animator = PatientAnimator(0, window=self.window)
+        self.addCleanup(animator.close)
+        stop = asyncio.Event()
+        incoming = asyncio.Queue()
+        websocket = AsyncMock()
+        websocket.recv.return_value = json.dumps({"type": "session.updated"})
+        credential = AsyncMock()
+        credential.get_token.return_value = AccessToken("test-token", 9999999999)
+
+        async def events():
+            while not stop.is_set():
+                yield json.dumps(await incoming.get())
+
+        @asynccontextmanager
+        async def connection(headers):
+            yield websocket
+
+        def mouse(kind, position):
+            animator.handle_event(pygame.event.Event(
+                kind, button=1, pos=tuple(round(n * 1.5) for n in position),
+            ), stop)
+
+        async def play():
+            await until(lambda: animator.skill_engine is not None)
+            animator.handle_event(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_F7), stop)
+            self.assertIsInstance(animator._skill_browser, EquipmentDrawer)
+            self.assertTrue(animator._local_skill_requests.empty())
+            drawer = animator._skill_browser
+            mouse(pygame.MOUSEBUTTONUP, (drawer.LIST_RECT.centerx, drawer.LIST_RECT.y + 34))
+            await until(lambda: isinstance(animator._skill_confirmation, ThermometerActivity))
+            activity = animator._skill_confirmation
+            await incoming.put({"type": "input_audio_buffer.speech_started"})
+            await incoming.put({"type": "input_audio_buffer.committed"})
+            await until(incoming.empty)
+            mouse(pygame.MOUSEBUTTONDOWN, (220, 300))
+            mouse(pygame.MOUSEBUTTONUP, (220, 300))
+            self.assertEqual(activity.state, "picked")
+            self.assertEqual(animator.skill_engine.actions, [])
+            mouse(pygame.MOUSEMOTION, activity.mouth_rect.center)
+            mouse(pygame.MOUSEBUTTONUP, activity.mouth_rect.center)
+            self.assertEqual(activity.state, "measuring")
+            animator._advance_skill_activity(activity.measurement_started + activity.MEASURE_SECONDS)
+            animator.draw()
+            await until(lambda: animator.evidence_open)
+            self.assertIn("38.0", animator._test_result.results)
+            animator.draw()
+            animator.close_test_result()
+            await until(lambda: not animator._local_skill_busy)
+            stop.set()
+
+        websocket.__aiter__.side_effect = events
+        with (
+            patch("src.realtime_conversation.GameCredential", return_value=credential),
+            patch("src.realtime_conversation._realtime_connection", connection),
+            patch("src.realtime_conversation._microphone_stream", return_value=nullcontext(None)),
+            patch("src.realtime_conversation.DeviceSink", return_value=RecordingSink()),
+        ):
+            session = asyncio.create_task(_conversation_session(
+                str(scenario.system_prompts), scenario.disease, 0, scenario.tests, animator, stop,
+            ))
+            try:
+                await asyncio.wait_for(play(), 5)
+                await asyncio.wait_for(session, 2)
+            finally:
+                session.cancel()
+                await asyncio.gather(session, return_exceptions=True)
+        sent = [json.loads(call.args[0]) for call in websocket.send.call_args_list]
+        self.assertFalse(any(e["type"] == "response.create" for e in sent))
+        self.assertEqual(animator.skill_engine.actions[-1]["status"], "completed")
+        self.assertFalse(animator.skills_modal)
 
     async def test_complete_session_routes_cough_and_continuation_without_popup(self):
         scenario = load_patient_scenario(ROOT / "data/prompts/01_common_cold_kid.json")

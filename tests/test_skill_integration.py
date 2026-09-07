@@ -78,6 +78,30 @@ class SkillIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.animator.skill_engine.score, 0)
         self.assertFalse(any(action["status"] == "completed" for action in self.animator.skill_engine.actions))
 
+    async def test_voice_tool_calls_use_each_instrument_without_opening_drawer(self):
+        from src.skill_activity import INSTRUMENTS, InstrumentActivity
+        from tests.audio_fakes import until
+        for skill_id in INSTRUMENTS:
+            task = asyncio.create_task(_resolve_skill_call(
+                self.call(name=f"propose_{skill_id}"), _test_tools([])[1], self.animator,
+            ))
+            try:
+                await until(lambda: isinstance(self.animator._skill_confirmation, InstrumentActivity))
+                activity = self.animator._skill_confirmation
+                self.assertEqual(activity.skill_id, skill_id)
+                self.assertEqual(activity.state, "idle")
+                self.assertIsNone(self.animator._skill_browser)
+                for key in (pygame.K_RETURN, pygame.K_TAB, pygame.K_RETURN):
+                    self.animator.handle_event(pygame.event.Event(pygame.KEYDOWN, key=key), self.stop)
+                self.animator._advance_skill_activity(activity.measurement_started + activity.MEASURE_SECONDS)
+                await until(lambda: self.animator.evidence_open)
+                self.animator.close_test_result()
+                result = await task
+                self.assertEqual(result["status"], "completed")
+            finally:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+
     async def test_pcr_clarifies_before_confirmation_and_cancels_without_result(self):
         with patch.object(self.animator, "confirm_skill", new=AsyncMock()) as confirm:
             for parameters in ({}, {"specimen": "nasal_swab"}, {"target": "influenza_A_B"},
@@ -130,7 +154,7 @@ class SkillIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.animator._text_messages.empty())
 
     async def test_confirmation_keyboard_defaults_cancel_and_explicit_tab_confirms(self):
-        proposal = self.animator.skill_engine.prepare("temperature", {}, ())
+        proposal = self.animator.skill_engine.prepare("throat_examination", {}, ())
         for confirm in (False, True):
             pending = asyncio.create_task(self.animator.confirm_skill(proposal))
             await asyncio.sleep(0)
