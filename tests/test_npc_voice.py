@@ -64,7 +64,7 @@ class VoiceConfigurationTests(unittest.TestCase):
 
     def test_missing_dependencies_are_actionable_only_when_enabled(self):
         with patch("src.speech_processor.importlib.util.find_spec", return_value=None):
-            with self.assertRaisesRegex(AudioPlaybackError, "requirements-voice.txt"):
+            with self.assertRaisesRegex(AudioPlaybackError, "uv sync --locked"):
                 SpeechProcessor(VoiceProfile(enabled=True))
             SpeechProcessor(VoiceProfile(enabled=False))
 
@@ -278,7 +278,7 @@ class VoiceProcessLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 await processor(b"\0\0")
 
 
-@unittest.skipUnless(HAS_VOICE, "Install requirements-voice.txt for real voice processing tests")
+@unittest.skipUnless(HAS_VOICE, "Run uv sync --locked for real voice processing tests")
 class RealVoiceTests(unittest.IsolatedAsyncioTestCase):
     def fixture(self, samples=24000):
         import numpy as np

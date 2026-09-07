@@ -49,8 +49,10 @@ cooldown. Explicit requests bypass cycle selection, not cooldown or the turn cap
 
 The selected kid voice is Harvest / broad / 0.80 / no taper. Strength zero still
 resynthesizes speech; use `enabled: false` for actual bypass. Missing optional
-dependencies produce an actionable audio error. Install
-[requirements-voice.txt](../requirements-voice.txt) in the game interpreter.
+dependencies produce an actionable audio error. Run `uv sync --locked` from the
+repository root to install the default `voice` dependency group. Both ordinary
+`uv sync` and `uv run` retain these locked dependencies. To omit them, use
+`--no-group voice` with both commands and disable the patient's voice filter.
 
 The shared [processing engine](../src/voice_processing.py) is independent of
 the [offline audition CLI](../tools/audition_voice.py). The game runs each
@@ -122,11 +124,12 @@ speech and character fit before distribution. No creator endorsement is implied.
 
 ## Offline tools
 
-Use the existing game environment with voice dependencies, or an isolated
-environment installed from `requirements-audition.txt`.
+Use the uv-managed game environment, which includes voice dependencies by
+default. Legacy isolated environments can still install
+[requirements-audition.txt](../requirements-audition.txt).
 
 ```bash
-python -m tools.audition_voice \
+uv run python -m tools.audition_voice \
   --input speech.wav --output .artifacts/voice-comparison \
   --transcript "My nose feels blocked today." \
   --source-kind azure-realtime \

@@ -21,7 +21,7 @@ try:
 except ModuleNotFoundError as error:
     if error.name not in {"numpy", "pyworld"}:
         raise
-    raise unittest.SkipTest("Run with the optional requirements-audition.txt environment") from error
+    raise unittest.SkipTest("Run uv sync --locked to install the default voice group") from error
 
 
 class VoiceAuditionTests(unittest.TestCase):
