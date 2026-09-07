@@ -24,6 +24,7 @@ from dataclasses import asdict, dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import httpx
 import pygame
@@ -40,8 +41,10 @@ from src.audio_playback import AudioPlaybackError, DeviceSink
 from src.care_plan import Prescription, Referral
 from src.care_plan_ui import CareOrderForm
 from src.diagnostic_skills import SkillEngine, load_catalog
-from src.skill_browser import SkillBrowser
+from src.skill_browser import ADVANCED_TEST_IDS, AdvancedTestDrawer, EquipmentDrawer, SkillBrowser
 from src.skill_confirmation import SkillConfirmation
+from src.skill_result import SkillResultPanel, SkillResultSummary
+from src.skill_activity import INSTRUMENTS, SUPPORTED_ACTIVITIES, InstrumentActivity, ThermometerActivity
 from src.conversation_runtime import ConversationRuntime, EvidencePresenter
 from src.game_ui import ChoiceMenu, chat_font, is_rtl, draw_spinner, wrap_text
 from src.patient_performance import PerformanceProfile
@@ -234,6 +237,7 @@ class Test:
     results: str
     evidence_image: str | None = None
     audio: str | None = None
+    skill_summary: SkillResultSummary | None = None
 
     def __post_init__(self) -> None:
         if not self.description.strip():
@@ -687,6 +691,7 @@ class PatientAnimator:
         self._scene_started_at = time.monotonic()
         self._test_result: Test | None = None
         self._test_result_image: pygame.Surface | None = None
+        self._skill_result_panel: SkillResultPanel | None = None
         self._evidence_closed = asyncio.Event()
         self._evidence_closed.set()
         self._test_close_button = pygame.Rect(400, 48, 30, 30)
@@ -694,9 +699,16 @@ class PatientAnimator:
         self.metrics = ConsultationMetrics()
         self.skill_engine: SkillEngine | None = None
         self._skill_browser: SkillBrowser | None = None
-        self._skill_confirmation: SkillConfirmation | None = None
+        self._skill_confirmation: SkillConfirmation | InstrumentActivity | None = None
         self._skill_decision: asyncio.Future[bool] | None = None
         self._skills_busy = False
+        self._local_skill_busy = False
+        self._local_skill_requests: asyncio.Queue[str] = asyncio.Queue()
+        self._local_skill_chat_was_focused = False
+        self._equipment_drawer_hotspot = pygame.Rect(52, 151, 39, 28)
+        self._advanced_drawer_hotspot = pygame.Rect(187, 182, 44, 25)
+        self._drawer_hovered = False
+        self._advanced_drawer_hovered = False
         self._skills_chat_was_focused = False
         self._skills_button = pygame.Rect(0, 0, 0, 0)
         self._discovered_tests_button = pygame.Rect(0, 0, 0, 0)
@@ -772,7 +784,8 @@ class PatientAnimator:
 
     @property
     def skills_modal(self) -> bool:
-        return self._skills_busy or self._skill_browser is not None
+        return (self._skills_busy or self._local_skill_busy
+                or self._skill_browser is not None or self._skill_confirmation is not None)
 
     @property
     def won(self) -> bool:
@@ -900,6 +913,7 @@ class PatientAnimator:
         self._test_result = test
         image_path = test.image_path
         self._test_result_image = None
+        self._skill_result_panel = None
         if image_path:
             image = pygame.image.load(str(image_path)).convert_alpha()
             max_dimension = max(image.get_size())
@@ -913,6 +927,9 @@ class PatientAnimator:
                     ),
                 )
             self._test_result_image = image
+        if test.skill_summary is not None:
+            skill = next(skill for skill in load_catalog() if skill.id == test.skill_summary.skill_id)
+            self._skill_result_panel = SkillResultPanel(test.skill_summary, skill.icon, self._test_result_image)
         self._push_to_talk.clear()
         self._evidence_closed.clear()
 
@@ -930,22 +947,81 @@ class PatientAnimator:
             )
         self.show_test_result(Test("Used skills and results", "\n\n".join(reports) if reports else "No skills used."))
 
-    def _open_skills(self) -> None:
+    def _open_skills(self, *, drawer: str | None = None) -> None:
+        if drawer not in (None, "equipment", "advanced"):
+            raise ValueError(f"Unknown drawer: {drawer!r}")
         if not self._ready or self.won or self.evidence_open or self._menu or self._diagnosis_open or self._care_form or self.skills_modal or self._pokedex.open:
+            return
+        if drawer is not None and (self.skill_engine is None or self._sending):
             return
         self._skills_chat_was_focused = self._text_focused
         self._set_text_focus(False)
-        self._skill_browser = SkillBrowser(load_catalog())
+        if drawer == "equipment":
+            self._skill_browser = EquipmentDrawer(skill for skill in load_catalog() if skill.id in SUPPORTED_ACTIVITIES)
+        elif drawer == "advanced":
+            self._skill_browser = AdvancedTestDrawer(skill for skill in load_catalog() if skill.id in ADVANCED_TEST_IDS)
+        else:
+            self._skill_browser = SkillBrowser(load_catalog())
 
     async def confirm_skill(self, proposal: dict) -> bool:
         request = next((text for speaker, text in reversed(self._transcript) if speaker == "You"), "")
-        self._skill_confirmation = SkillConfirmation(proposal["name"], proposal["parameters"], request)
+        if proposal["skill_id"] in SUPPORTED_ACTIVITIES and proposal["availability"] == "available":
+            frame = self._patient_frames["talking"][0]
+            patient_type = tuple(PatientType)[self._patient_number - 1].name
+            self._skill_confirmation = (
+                ThermometerActivity(frame, patient_type) if proposal["skill_id"] == "temperature"
+                else InstrumentActivity(frame, patient_type, proposal["skill_id"])
+            )
+            if self._local_skill_busy:
+                self._skill_confirmation.handle_event(
+                    pygame.event.Event(pygame.KEYDOWN, key=pygame.K_RETURN), (-1, -1),
+                )
+        else:
+            skill = next(skill for skill in load_catalog() if skill.id == proposal["skill_id"])
+            self._skill_confirmation = SkillConfirmation(
+                proposal["name"], proposal["parameters"], request, skill_id=skill.id, icon=skill.icon,
+            )
         self._skill_decision = asyncio.get_running_loop().create_future()
         try:
             return await self._skill_decision
         finally:
             self._skill_confirmation = None
             self._skill_decision = None
+
+    def _advance_skill_activity(self, now: float) -> None:
+        activity = self._skill_confirmation
+        if isinstance(activity, InstrumentActivity) and activity.update(now):
+            if self._skill_decision is not None and not self._skill_decision.done():
+                self._skill_decision.set_result(True)
+
+    def _request_local_skill(self, skill_id: str) -> None:
+        if skill_id not in SUPPORTED_ACTIVITIES:
+            self.add_transcript("Skill", "No hands-on activity is available for that skill yet.")
+            return
+        if (not self._ready or self.skill_engine is None or self.won or self.evidence_open
+                or self._menu or self._diagnosis_open or self._care_form or self.skills_modal
+                or self._pokedex.open or self._sending):
+            return
+        self._local_skill_chat_was_focused = self._text_focused
+        self._set_text_focus(False)
+        self._local_skill_busy = True
+        label = INSTRUMENTS[skill_id].label.lower()
+        self.add_transcript("You", f"[Selected the {label} for a hands-on examination.]")
+        self._local_skill_requests.put_nowait(skill_id)
+
+    def _draw_equipment_drawer_hint(self) -> None:
+        if (not (self._drawer_hovered or self._advanced_drawer_hovered)
+                or not self._ready or self.skill_engine is None
+                or self.won or self.skills_modal or self.evidence_open or self._menu
+                or self._diagnosis_open or self._care_form or self._pokedex.open):
+            return
+        drawer = (54, 157, 33, 15) if self._drawer_hovered else (189, 184, 40, 21)
+        caption = "Open equipment drawer / F7" if self._drawer_hovered else "Advanced-test requests / F8"
+        pygame.draw.rect(self._screen, UI_GOLD, drawer, width=2)
+        label = self._status_font.render(caption, True, UI_WHITE)
+        rect = label.get_rect(topleft=(24, 124)).inflate(12, 10)
+        pygame.draw.rect(self._screen, UI_PANEL, rect, border_radius=4)
+        self._screen.blit(label, (24, 124))
 
     async def wait_for_evidence_close(self) -> None:
         await self._evidence_closed.wait()
@@ -1041,6 +1117,7 @@ class PatientAnimator:
     def close_test_result(self) -> None:
         self._test_result = None
         self._test_result_image = None
+        self._skill_result_panel = None
         self._evidence_closed.set()
         if self._care_form is not None:
             self._care_form.focus(self._care_form.focus_index)
@@ -1105,7 +1182,7 @@ class PatientAnimator:
         if not self._ready:
             return "CONNECTING", UI_GOLD
         if self.push_to_talk:
-            return "LISTENING", UI_CORAL
+            return "RELEASE SHIFT TO SEND", UI_CORAL
         if state == "talking" or (self._celebration.active(time.monotonic()) and self._state == "talking"):
             return "PATIENT SPEAKING", UI_MINT
         if self._sending:
@@ -1482,6 +1559,11 @@ class PatientAnimator:
             2,
         )
 
+        if self._skill_result_panel is not None:
+            self._evidence_max_scroll = self._skill_result_panel.draw(self._screen, self._evidence_scroll)
+            self._evidence_scroll = min(self._evidence_scroll, self._evidence_max_scroll)
+            return
+
         content = pygame.Rect(48, 116, 384, 286)
         pygame.draw.rect(self._screen, (232, 241, 235), content, border_radius=6)
         title_lines = wrap_text(self._test_result.description, self._test_title_font, content.width - 44)
@@ -1688,6 +1770,7 @@ class PatientAnimator:
         self._screen.fill(UI_PAPER)
         self._screen.blit(self._world, (0, 0))
         self._draw_characters(patient_frame, player_frame, state)
+        self._draw_equipment_drawer_hint()
         self._draw_celebration()
         self._draw_header(state)
         self._draw_transcript()
@@ -1706,6 +1789,7 @@ class PatientAnimator:
         if self._skill_browser is not None:
             self._skill_browser.draw(self._screen)
         if self._skill_confirmation is not None:
+            self._advance_skill_activity(time.monotonic())
             self._skill_confirmation.draw(self._screen)
         if self._pokedex.open and not self.evidence_open and not self.won:
             self._pokedex.draw(self._screen)
@@ -1714,6 +1798,9 @@ class PatientAnimator:
         pygame.display.flip()
 
     def handle_event(self, event: pygame.event.Event, stop: asyncio.Event) -> None:
+        if event.type in (pygame.WINDOWLEAVE, pygame.WINDOWFOCUSLOST):
+            self._drawer_hovered = False
+            self._advanced_drawer_hovered = False
         if event.type == pygame.QUIT:
             self._celebration.dismiss()
             self._pokedex.hide()
@@ -1723,6 +1810,8 @@ class PatientAnimator:
             stop.set()
             return
         if event.type == pygame.WINDOWFOCUSLOST:
+            if isinstance(self._skill_confirmation, InstrumentActivity):
+                self._skill_confirmation.handle_event(event, (-1, -1))
             self._set_text_focus(False)
             if self._pokedex.open:
                 self._pokedex.focus(False)
@@ -1742,6 +1831,9 @@ class PatientAnimator:
         key = event.key if event.type == pygame.KEYDOWN else None
         clicked = event.type == pygame.MOUSEBUTTONUP and event.button == 1
         position = self._screen_position(event.pos) if hasattr(event, "pos") else (-1, -1)
+        if event.type == pygame.MOUSEMOTION:
+            self._drawer_hovered = self._equipment_drawer_hotspot.collidepoint(position)
+            self._advanced_drawer_hovered = self._advanced_drawer_hotspot.collidepoint(position)
         if self._skill_confirmation is not None:
             decision = self._skill_confirmation.handle_event(event, position)
             if decision is not None and self._skill_decision is not None and not self._skill_decision.done():
@@ -1751,6 +1843,10 @@ class PatientAnimator:
             action = self._skill_browser.handle_event(event, position)
             if action is not None:
                 self._skill_browser = None
+                if action[0] == "activity":
+                    self._set_text_focus(self._skills_chat_was_focused)
+                    self._request_local_skill(action[1])
+                    return
                 if action[0] == "draft":
                     self._text_input = (self._text_input + " " + action[1]).strip()
                 self._set_text_focus(action[0] == "draft" or self._skills_chat_was_focused)
@@ -1760,6 +1856,8 @@ class PatientAnimator:
                 clicked and self._test_close_button.collidepoint(self._screen_position(event.pos))
             ):
                 self.close_test_result()
+            elif self._skill_result_panel is not None and self._skill_result_panel.toggle_details(event, position):
+                self._evidence_scroll = 0
             elif event.type == pygame.MOUSEWHEEL:
                 self._evidence_scroll = max(0, min(self._evidence_max_scroll, self._evidence_scroll - event.y * 36))
             elif key in (pygame.K_DOWN, pygame.K_PAGEDOWN, pygame.K_UP, pygame.K_PAGEUP):
@@ -1803,7 +1901,7 @@ class PatientAnimator:
             if not self._pokedex.open:
                 self._set_text_focus(self._pokedex_chat_was_focused)
             return
-        if self._skills_busy:
+        if self._skills_busy or self._local_skill_busy:
             return
         if key == pygame.K_ESCAPE:
             if self._text_focused:
@@ -1824,6 +1922,10 @@ class PatientAnimator:
             self._open_skills()
         elif key == pygame.K_F6:
             self._open_pokedex()
+        elif key == pygame.K_F7:
+            self._open_skills(drawer="equipment")
+        elif key == pygame.K_F8:
+            self._open_skills(drawer="advanced")
         elif event.type == pygame.MOUSEWHEEL:
             self._transcript_scroll = max(0, self._transcript_scroll + event.y * 2)
         elif key in (pygame.K_PAGEUP, pygame.K_PAGEDOWN):
@@ -1841,7 +1943,11 @@ class PatientAnimator:
             self._push_to_talk.set()
         elif clicked:
             position = self._screen_position(event.pos)
-            if self._text_input_rect.collidepoint(position):
+            if self._equipment_drawer_hotspot.collidepoint(position):
+                self._open_skills(drawer="equipment")
+            elif self._advanced_drawer_hotspot.collidepoint(position):
+                self._open_skills(drawer="advanced")
+            elif self._text_input_rect.collidepoint(position):
                 self._set_text_focus(True)
             elif self._diagnose_button.collidepoint(position):
                 self._running = False
@@ -1864,6 +1970,8 @@ class PatientAnimator:
         stop.set()
 
     def close(self) -> None:
+        if self._skill_decision is not None and not self._skill_decision.done():
+            self._skill_decision.cancel()
         self._celebration.dismiss()
         self._pokedex.hide()
         pygame.key.stop_text_input()
@@ -1897,6 +2005,7 @@ async def _resolve_skill_call(
     *,
     present_result: EvidencePresenter | None = None,
     evidence_audio: dict[str, str] | None = None,
+    origin: str = "conversation",
 ) -> dict:
     """Validate and execute a win, or obtain local approval for a medical skill."""
     engine = animator.skill_engine
@@ -1922,6 +2031,7 @@ async def _resolve_skill_call(
         "tool": call.get("name"),
         "arguments": call.get("arguments"),
         "status": "pending",
+        "origin": origin,
     }
     animator.metrics.skill_requests.append(record)
     proposal = None
@@ -1976,6 +2086,11 @@ async def _resolve_skill_call(
             restore_focus = animator._text_focused
             animator._set_text_focus(False)
             confirmed = await animator.confirm_skill(proposal)
+            if skill_id in SUPPORTED_ACTIVITIES and proposal["availability"] == "available":
+                record["interaction"] = {
+                    "kind": "instrument_placement", "target": INSTRUMENTS[skill_id].target,
+                    "completed": confirmed and is_current(),
+                }
         if not confirmed or not is_current():
             engine.cancel(proposal)
             result = {"status": "cancelled", "name": proposal["name"], "result": "Cancelled before action; no procedure completed.", "points": 0}
@@ -1992,6 +2107,9 @@ async def _resolve_skill_call(
             evidence = Test(
                 result["name"], explanation, evidence_image=result.get("image_path"),
                 audio=(evidence_audio or {}).get(result["name"].casefold()) if result["status"] == "completed" else None,
+                skill_summary=SkillResultSummary(
+                    skill_id, result["name"], result["result"], result["points"], result["rationale"],
+                ) if result["status"] == "completed" else None,
             )
             if present_result is None:
                 animator.show_test_result(evidence)
@@ -2022,6 +2140,46 @@ async def _resolve_skill_call(
         animator.metrics.diagnostic_skills = engine.summary()
         if restore_focus is not None:
             animator._set_text_focus(restore_focus)
+
+
+async def _perform_local_skill(animator: PatientAnimator, runtime: ConversationRuntime, skill_id: str) -> None:
+    """Run an explicit instrument choice without asking the LLM to interpret it."""
+    restore_focus = animator._local_skill_chat_was_focused
+    try:
+        if skill_id not in SUPPORTED_ACTIVITIES:
+            raise ValueError("Unsupported hands-on skill.")
+        old_skill = runtime.skill_task
+        await runtime.interrupt(new_turn=True)
+        if old_skill is not None:
+            try:
+                await old_skill
+            except asyncio.CancelledError:
+                if asyncio.current_task().cancelling():
+                    raise
+        runtime.user_talking = False
+        await runtime.send({"type": "input_audio_buffer.clear"})
+        generation = runtime.playback.generation
+        result = await _resolve_skill_call(
+            {"name": f"propose_{skill_id}", "arguments": "{}", "call_id": f"local-{uuid4().hex}"},
+            runtime.skill_tools, animator,
+            lambda: generation == runtime.playback.generation and not runtime.stop.is_set() and not animator.won,
+            origin="instrument",
+        )
+        if result["status"] != "cancelled" and not runtime.stop.is_set():
+            # There is no model function call to answer. Send only observed facts,
+            # not scoring, image paths, or a fabricated function-call output.
+            await runtime.send({
+                "type": "conversation.item.create",
+                "item": {"type": "message", "role": "user", "content": [{
+                    "type": "input_text",
+                    "text": "Game procedure record (not a new request): " + json.dumps({
+                        key: result[key] for key in ("status", "name", "result") if key in result
+                    }),
+                }]},
+            })
+    finally:
+        animator._local_skill_busy = False
+        animator._set_text_focus(restore_focus)
 
 
 async def _conversation_session(
@@ -2266,6 +2424,13 @@ async def _run_connected_session(
                 animator._sending = False
                 animator._sent_until = time.monotonic() + 1.2
 
+        async def perform_instrument_requests() -> None:
+            while not stop.is_set():
+                skill_id = await animator._local_skill_requests.get()
+                while not audio_queue.empty():
+                    audio_queue.get_nowait()
+                await _perform_local_skill(animator, runtime, skill_id)
+
         async def watch_push_to_talk() -> None:
             pressed = False
             while not stop.is_set():
@@ -2287,6 +2452,11 @@ async def _run_connected_session(
             async for raw_message in websocket:
                 event = json.loads(raw_message)
                 event_type = event.get("type")
+                if animator._local_skill_busy and event_type in (
+                    "input_audio_buffer.speech_started", "input_audio_buffer.speech_stopped",
+                    "input_audio_buffer.committed",
+                ):
+                    continue
                 if animator.won and event_type != "conversation.item.input_audio_transcription.completed":
                     continue
                 if event_type == "input_audio_buffer.speech_started":
@@ -2321,6 +2491,7 @@ async def _run_connected_session(
 
         tasks = {
             asyncio.create_task(send_text_messages()),
+            asyncio.create_task(perform_instrument_requests()),
             asyncio.create_task(receive_events()),
             asyncio.create_task(stop.wait()),
             asyncio.create_task(runtime.playback.run()),

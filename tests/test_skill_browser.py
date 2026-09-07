@@ -11,7 +11,9 @@ os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
 
 import pygame
 
-from src.skill_browser import SkillBrowser
+from src.skill_browser import ADVANCED_TEST_IDS, AdvancedTestDrawer, EquipmentDrawer, SkillBrowser
+from src.diagnostic_skills import load_catalog
+from src.skill_activity import SUPPORTED_ACTIVITIES
 
 
 def skill(index=0, **changes):
@@ -55,6 +57,66 @@ class SkillBrowserTests(unittest.TestCase):
                 self.assertLessEqual(self.browser.list_offset, index)
                 self.assertLess(index, self.browser.list_offset + 12)
                 self.browser.draw(self.surface)
+
+    def test_temperature_art_and_button_start_activity_without_drafting(self):
+        self.browser = SkillBrowser([skill(id="temperature", name="Temperature", parameters={})])
+        self.key(pygame.K_RETURN)
+        self.assertEqual(self.key(pygame.K_RETURN), ("activity", "temperature"))
+        self.assertEqual(self.click(self.browser.ART_RECT.center), ("activity", "temperature"))
+        self.assertEqual(self.click(self.browser.REQUEST_RECT.center), ("activity", "temperature"))
+        self.browser.draw(self.surface)
+
+    def test_drawer_click_or_enter_picks_instrument_without_details_step(self):
+        self.browser = EquipmentDrawer([skill(id="temperature", name="Temperature", parameters={})])
+        self.assertEqual(self.key(pygame.K_RETURN), ("activity", "temperature"))
+        self.assertEqual(self.click((80, 140)), ("activity", "temperature"))
+        self.assertIsNone(self.click((80, 220)))
+        self.assertFalse(self.browser.details_open)
+        self.assertEqual(self.key(pygame.K_ESCAPE), ("close", ""))
+        self.assertEqual(self.key(pygame.K_F7), ("close", ""))
+        self.assertEqual(self.click(self.browser.BACK_RECT.center), ("close", ""))
+        self.browser.draw(self.surface)
+
+    def test_drawer_pages_and_scrolls_many_instruments(self):
+        self.browser = EquipmentDrawer(skill(i) for i in range(31))
+        for key, index in ((pygame.K_DOWN, 1), (pygame.K_PAGEDOWN, 5),
+                           (pygame.K_END, 30), (pygame.K_DOWN, 30),
+                           (pygame.K_PAGEUP, 26), (pygame.K_HOME, 0)):
+            self.key(key)
+            self.assertEqual(self.browser.selected, index)
+            self.assertLessEqual(self.browser.list_offset, index)
+            self.assertLess(index, self.browser.list_offset + self.browser.ROWS)
+            self.browser.draw(self.surface)
+        self.browser.handle_event(pygame.event.Event(pygame.MOUSEWHEEL, y=-3))
+        self.assertEqual(self.browser.selected, 9)
+        self.key(pygame.K_END)
+        self.click((80, self.browser.LIST_RECT.bottom - 10))
+        self.assertEqual(self.browser.selected_skill.id, "skill-30")
+
+    def test_empty_drawer_cannot_start_a_procedure(self):
+        self.browser = EquipmentDrawer([])
+        self.assertIsNone(self.key(pygame.K_RETURN))
+        self.assertIsNone(self.click((80, 140)))
+        self.key(pygame.K_END)
+        self.browser.draw(self.surface)
+        self.assertEqual(self.key(pygame.K_ESCAPE), ("close", ""))
+
+    def test_advanced_forms_have_real_ids_and_are_separate_from_instruments(self):
+        catalog = load_catalog()
+        self.assertTrue(ADVANCED_TEST_IDS <= {s.id for s in catalog})
+        self.assertFalse(ADVANCED_TEST_IDS & SUPPORTED_ACTIVITIES)
+        self.assertTrue({"chest_x_ray", "complete_blood_count", "biopsy",
+                         "viral_metagenomic_sequencing"} <= ADVANCED_TEST_IDS)
+        self.assertFalse({"sexual_health_history", "genetic_counseling", "range_of_motion"} & ADVANCED_TEST_IDS)
+        self.browser = AdvancedTestDrawer(s for s in catalog if s.id in ADVANCED_TEST_IDS)
+        self.key(pygame.K_END)
+        self.assertEqual(self.browser.selected, len(self.browser.catalog) - 1)
+        self.key(pygame.K_RETURN)
+        action = self.key(pygame.K_RETURN)
+        self.assertEqual(action[0], "draft")
+        self.assertTrue(action[1])
+        self.browser.draw(self.surface)
+        self.assertEqual(self.key(pygame.K_F8), ("close", ""))
 
     def test_last_page_has_twelve_rows(self):
         self.key(pygame.K_END)

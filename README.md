@@ -143,12 +143,41 @@ reset the full campaign.
   crouching or jumping; stand/land before entering a consultation. These keys
   still type normally during consultations. WASD movement is no longer used.
 - Enter Pediatrics and the Diagnostics Lab through their corridor doors.
-- Hold either Shift key to speak. Click the text field and press Enter to type.
+- Hold either Shift key to speak, then **release Shift** to let the patient
+  respond or propose a test. The game will not open a new confirmation while
+  push-to-talk is held. Click the text field and press Enter to type.
 - In chat, diagnosis, care-plan text fields and Dragon Simulator Assist, use Cmd+V on
   macOS (Ctrl+V elsewhere) to paste. Cmd/Ctrl+A selects the whole field;
   Cmd/Ctrl+C copies and Cmd/Ctrl+X cuts the selection. Pasted line breaks become
   spaces; pasting never sends a message, submits a diagnosis or orders a test.
 - Interview the patient in the diagnosis battle and request skills from the shared catalog.
+- Click the **drawer under the sink, behind and to the left of the doctor** (or
+  press **F7**) to open the equipment drawer. Pick up a **thermometer** (mouth),
+  **pulse oximeter** (finger), **stethoscope** (chest/lung examination), or
+  **otoscope** (ear). Instruments stay in the drawer, not permanently on the screen.
+  The drawer supports scrolling and paging as more instruments are added.
+  Escape, F7, or Close shuts it without performing a procedure.
+  You can also select **Temperature -> Use thermometer** in the skill browser,
+  or say **"measure temperature"** to start the same hands-on activity directly.
+  Click or drag the instrument's contact point to its highlighted body target,
+  then let the 2.5-second activity finish. Keyboard: Enter picks up,
+  Tab aims at the target (arrows also move it), and Enter places it. Escape or
+  Cancel abandons the activity; losing window focus resets unfinished placement.
+  Voice/text requests for these four skills use the same activities instead of instant execution.
+  Only a completed measurement reveals the authored case result and goes through
+  existing appropriate-use scoring; misses/cancellations earn nothing and repeats
+  cannot farm points. The original thermometer evidence remains authoritative.
+  This is a simplified educational interaction, not a real-world procedure guide.
+  The short placement activities represent simplified examinations, not complete
+  clinical technique. Other catalog entries retain their existing request workflows.
+- Click the **bottom drawer of the tall cabinet between the doctor and the patient**
+  (or press **F8**) for **advanced-test request forms**: laboratory tests, imaging,
+  pathology, genetics, and other specialist investigations. Select a form to read
+  its details, then **Draft request**; nothing is sent or performed automatically.
+  Send the draft to discuss required specimens, targets, consent, or other
+  prerequisites before confirmation. These are forms, not machines stored in a
+  drawer. Escape backs out and F8 closes the drawer. **F5** still browses all skills,
+  including histories and examinations that do not use these drawers.
 - State your diagnosis to the patient by voice or text. A correct diagnosis triggers You Win, the celebration, and the scorecard automatically. Click Give Up to return without solving the case.
 - Help patient 01 to unlock the Patient Ward.
 - Help patient 02 to unlock the Pharmacy Lounge.
@@ -162,7 +191,15 @@ reset the full campaign.
 - Patient speech and your responses appear in the conversation transcript.
 - Scroll the transcript with the mouse wheel or Page Up / Page Down.
 - Request a skill by voice or text. Review the interpreted skill and parameters, then explicitly confirm or cancel.
+- Skill confirmations show an illustrative image, the skill name and its clinical
+  options. **Details / D** reveals the original request and full options; long
+  details scroll. Illustrations are not patient findings. Cancel remains the
+  default keyboard choice, and confirmation is not a substitute for patient consent.
 - Scroll long evidence reports with the wheel, arrow keys, or Page Up / Page Down.
+- Completed skill results show an instrument illustration and the actual result,
+  with a large reading for temperature. **Details / D** opens the full report,
+  any original evidence image, and the scoring explanation. Illustrations never
+  replace patient-specific findings; the full results also remain in Used skills.
 - Press F2 to open the diagnosis dialog.
 - Enter a diagnosis and click Submit Diagnosis or press Enter to commit it.
 - Tab / Shift+Tab moves between the diagnosis field, Cancel, and Submit Diagnosis.
