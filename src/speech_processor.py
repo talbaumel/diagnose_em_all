@@ -27,7 +27,7 @@ class SpeechProcessor:
             if missing:
                 raise AudioPlaybackError(
                     "NPC voice processing dependencies missing: " + ", ".join(missing)
-                    + ". Install requirements-voice.txt in the game interpreter, "
+                    + ". Run uv sync --locked from the repository root and launch with uv run, "
                     "or set performance_profile.voice.enabled to false."
                 )
 

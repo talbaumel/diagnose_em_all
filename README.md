@@ -48,7 +48,6 @@ Then sync the project from the repository root:
 ```bash
 keyring --list-backends
 uv sync --locked --python 3.13
-uv pip install -r requirements-voice.txt
 ```
 
 uv creates and manages `.venv` automatically and downloads Python if needed.
@@ -59,11 +58,15 @@ Use `uv add <package>` or `uv remove <package>` to change dependencies; use
 `uv lock --upgrade` followed by `uv sync` to update locked versions.
 Commit both `pyproject.toml` and `uv.lock` when dependencies change.
 
-The common-cold kid enables the optional voice filter, so install
-`requirements-voice.txt` for the default campaign. Reinstall it after an exact
-`uv sync`, which removes packages outside the project lockfile. Without voice
-dependencies, set `performance_profile.voice.enabled` to `false` in
+The common-cold kid enables the voice filter. Its NumPy, PyWORLD and setuptools
+dependencies are locked in the default `voice` dependency group, so ordinary
+`uv sync` and `uv run` include them without a separate requirements-file install.
+Use `uv add --group voice <package>` to change voice dependencies.
+For a lightweight environment, use `uv sync --locked --no-group voice` and
+`uv run --no-group voice ...`. Without voice dependencies, set
+`performance_profile.voice.enabled` to `false` in
 [the kid's JSON](data/prompts/01_common_cold_kid.json), or run another persona.
+The requirements files remain available only for legacy standalone auditions.
 The pinned PyWORLD/setuptools combination may emit an upstream
 `pkg_resources` deprecation warning.
 
@@ -156,6 +159,10 @@ reset the full campaign.
 - Tab / Shift+Tab moves between the diagnosis field, Cancel, and Submit Diagnosis.
 - Cancel or Escape returns to the conversation without submitting; your chat draft is preserved.
 - Incorrect submissions leave the case open so you can continue investigating or try again.
+- A correct submission gives every patient a personal thank-you, an animated happy
+  gesture, and a brief burst of pixel confetti. It plays once per visit, stays clear
+  of the chat controls, and does not add points or finish the visit. Care planning
+  and conversation remain available throughout.
 - The stopwatch starts when the patient connection is ready and stops when you finish the visit, including care planning.
 - Click Tests Found or press F3 to review used skills, actual findings, and point rationales.
 - Click Care Plan or press F4 to add prescriptions, add referrals, or review recorded orders.
@@ -331,6 +338,16 @@ Each file under [data/prompts/](data/prompts/) defines `system_prompts`, `diseas
 `patient_type`, and a nonempty `tests` list. Test `results` may be text or an image
 path. Optional test `audio` accepts a nonempty mono 24 kHz PCM16 WAV of at most
 10 seconds; it plays through the same interruptible output queue.
+
+The bundled patients also define `age` (integer years, 0-120) and `gender`
+(nonempty text). These are authored fictional character choices informed by the
+artwork, not demographics inferred with certainty from appearance. The loader
+adds them to the conversation instructions; both fields remain optional for
+custom patients. The personas specify age-appropriate vocabulary, speaking pace,
+concerns, and reactions without changing the authored clinical results. They
+discourage assistant-style replies, repeated catchphrases, and narrated gestures.
+Vocal delivery remains model-dependent; prompts do not guarantee a particular
+voice timbre. Only the common-cold kid has the optional local voice filter enabled.
 
 The optional `performance_profile` independently configures delivery, voice
 processing, catalog-selected cues and scheduling. Only the common-cold kid is

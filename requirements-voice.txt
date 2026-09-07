@@ -1,4 +1,5 @@
-# Optional game voice processing and offline auditions.
+# Legacy standalone auditions; the game uses pyproject.toml's default voice group.
+# Keep these compatibility pins aligned with that group when updating dependencies.
 numpy==2.2.6
 pyworld==0.3.5
 # PyWORLD 0.3.5 imports pkg_resources, removed in setuptools 81.

@@ -45,6 +45,7 @@ from src.skill_confirmation import SkillConfirmation
 from src.conversation_runtime import ConversationRuntime, EvidencePresenter
 from src.game_ui import ChoiceMenu, chat_font, is_rtl, draw_spinner, wrap_text
 from src.patient_performance import PerformanceProfile
+from src.patient_celebration import PatientCelebration
 from src.pokedex_ui import PokedexPanel
 from src.text_editing import TextEditing
 from src.consultation_review import (
@@ -97,7 +98,6 @@ UI_GOLD = (244, 184, 72)
 UI_MUTED = (127, 151, 146)
 UI_WHITE = (255, 255, 251)
 SCENE_FADE_SECONDS = 0.28
-SCENE_EXIT_FADE_SECONDS = 0.35
 
 
 def extract_character(frame: pygame.Surface) -> pygame.Surface:
@@ -641,6 +641,8 @@ class PatientAnimator:
             WORLD_DISPLAY_SIZE,
         )
         self._patient_number = patient_index + 1
+        self._celebration = PatientCelebration(tuple(PatientType)[patient_index].name)
+        self._celebration_layer = pygame.Surface(SCREEN_SIZE, pygame.SRCALPHA)
         self._state = "idle"
         self._relieved_until = 0.0
         self._scene_started_at = time.monotonic()
@@ -756,6 +758,7 @@ class PatientAnimator:
         self._relieved_until = time.monotonic() + RELIEVED_DURATION_SECONDS
 
     def show_win(self) -> None:
+        self._celebration.dismiss()
         self._pokedex.hide()
         self.metrics.finish()
         self._won = True
@@ -765,7 +768,7 @@ class PatientAnimator:
         self.show_relieved()
 
     def _submit_diagnosis(self) -> None:
-        if not self._diagnosis_open or not self._ready or self.evidence_open or self.won or self._menu is not None:
+        if not self._diagnosis_open or not self._ready or self.evidence_open or self.won or self._menu is not None or self._diagnosis_confirmed.is_set():
             return
         submitted = self._diagnosis_input.strip()
         if not submitted or self._disease is None:
@@ -773,6 +776,7 @@ class PatientAnimator:
         self.add_transcript("Diagnosis", submitted)
         if _diagnosis_matches(submitted, self._disease):
             self._diagnosis_confirmed.set()
+            self._celebration.start(time.monotonic())
             self._close_diagnosis()
             self.add_transcript("Case", "Diagnosis confirmed.")
         else:
@@ -1018,6 +1022,8 @@ class PatientAnimator:
             self._pokedex.focus(True)
 
     def _current_state(self) -> str:
+        if self._celebration.active(time.monotonic()):
+            return "relieved"
         if time.monotonic() < self._relieved_until:
             return "relieved"
         return self._state
@@ -1047,6 +1053,10 @@ class PatientAnimator:
         return self._sheet.subsurface(rectangle)
 
     def _centered_frame(self, state: str, animation_time: float) -> pygame.Surface:
+        now = time.monotonic()
+        if self._celebration.active(now):
+            frames = self._patient_frames["relieved"]
+            return frames[self._celebration.frame_index(now, len(frames))]
         return animation_frame(
             self._patient_frames[state],
             animation_time,
@@ -1070,7 +1080,7 @@ class PatientAnimator:
             return "CONNECTING", UI_GOLD
         if self.push_to_talk:
             return "LISTENING", UI_CORAL
-        if state == "talking":
+        if state == "talking" or (self._celebration.active(time.monotonic()) and self._state == "talking"):
             return "PATIENT SPEAKING", UI_MINT
         if self._sending:
             return "SENDING", UI_GOLD
@@ -1132,8 +1142,11 @@ class PatientAnimator:
     ) -> None:
         motion_time = time.monotonic()
         patient_bob = round(math.sin(motion_time * 2.6) * 2)
+        lean, lift = self._celebration.pose(motion_time)
+        if lean:
+            patient_frame = pygame.transform.rotate(patient_frame, lean)
         player_bob = round(math.sin(motion_time * 2.2 + 1.4))
-        patient_rect = patient_frame.get_rect(midbottom=(330, 273 + patient_bob))
+        patient_rect = patient_frame.get_rect(midbottom=(330, 273 + patient_bob - lift))
         player_rect = player_frame.get_rect(midbottom=(122, 283 + player_bob))
         if self.push_to_talk:
             aura = pygame.Surface(SCREEN_SIZE, pygame.SRCALPHA)
@@ -1149,7 +1162,7 @@ class PatientAnimator:
                     width=2,
                 )
             self._screen.blit(aura, (0, 0))
-        self._draw_shadow((patient_rect.centerx, patient_rect.bottom - 3), 78)
+        self._draw_shadow((patient_rect.centerx, 270 + patient_bob), 78)
         self._draw_shadow((player_rect.centerx, 279), 88)
         self._screen.blit(patient_frame, patient_rect)
         self._screen.blit(player_frame, player_rect)
@@ -1174,6 +1187,35 @@ class PatientAnimator:
                     (bubble.x + 14 + offset, bubble.centery + dot_bob),
                     3,
                 )
+
+    def _draw_celebration(self) -> None:
+        now = time.monotonic()
+        if not self._celebration.active(now):
+            return
+        layer = self._celebration_layer
+        layer.fill((0, 0, 0, 0))
+        # Effects stay inside the scene, clear of status, transcripts and inputs.
+        layer.set_clip(pygame.Rect(16, 96, 448, 194))
+        self._celebration.draw_confetti(layer, now, (UI_CORAL, UI_GOLD, UI_MINT, UI_TEAL, UI_WHITE))
+        bubble = pygame.Rect(182, 99, 280, 47)
+        pygame.draw.rect(layer, (*UI_INK, 70), bubble.move(2, 3), border_radius=7)
+        pygame.draw.rect(layer, UI_PAPER, bubble, border_radius=7)
+        pygame.draw.rect(layer, UI_TEAL, bubble, width=2, border_radius=7)
+        pygame.draw.polygon(layer, UI_TEAL, ((343, 145), (354, 154), (362, 145)))
+        pygame.draw.polygon(layer, UI_PAPER, ((347, 144), (354, 149), (357, 144)))
+        # A small pixel heart matches the existing handheld-game sprite style.
+        for row, cells in enumerate(("0110110", "1111111", "1111111", "0111110", "0011100", "0001000")):
+            for column, cell in enumerate(cells):
+                if cell == "1":
+                    pygame.draw.rect(layer, UI_CORAL, (196 + column * 2, 113 + row * 2, 2, 2))
+        message = self._text_font.render(self._celebration.thanks.message, True, UI_INK)
+        layer.blit(message, (218, 105))
+        caption = self._status_font.render("Diagnosis confirmed", True, UI_TEAL)
+        layer.blit(caption, (218, 126))
+        layer.set_clip(None)
+        layer.set_alpha(self._celebration.opacity(now))
+        # Preserve Cocoa's framebuffer alpha when the overlay reaches full opacity.
+        self._screen.blit(layer, (0, 0), special_flags=pygame.BLEND_ALPHA_SDL2)
 
     def _draw_send_icon(self) -> None:
         center_x, center_y = self._text_send_button.center
@@ -1354,19 +1396,8 @@ class PatientAnimator:
     def _draw_scene_fade(self) -> None:
         now = time.monotonic()
         intro_progress = (now - self._scene_started_at) / SCENE_FADE_SECONDS
-        intro_alpha = 0
         if intro_progress < 1:
-            intro_alpha = round(255 * (1 - max(0.0, intro_progress)) ** 2)
-
-        exit_alpha = 0
-        if self.won:
-            remaining = self._relieved_until - now
-            if 0 <= remaining < SCENE_EXIT_FADE_SECONDS:
-                progress = 1 - remaining / SCENE_EXIT_FADE_SECONDS
-                exit_alpha = round(255 * progress * progress)
-
-        alpha = max(intro_alpha, exit_alpha)
-        if alpha:
+            alpha = round(255 * (1 - max(0.0, intro_progress)) ** 2)
             overlay = pygame.Surface(SCREEN_SIZE, pygame.SRCALPHA)
             overlay.fill((*UI_INK, alpha))
             self._screen.blit(overlay, (0, 0))
@@ -1641,6 +1672,7 @@ class PatientAnimator:
         self._screen.fill(UI_PAPER)
         self._screen.blit(self._world, (0, 0))
         self._draw_characters(patient_frame, player_frame, state)
+        self._draw_celebration()
         self._draw_header(state)
         self._draw_transcript()
         self._draw_console(state)
@@ -1667,6 +1699,7 @@ class PatientAnimator:
 
     def handle_event(self, event: pygame.event.Event, stop: asyncio.Event) -> None:
         if event.type == pygame.QUIT:
+            self._celebration.dismiss()
             self._pokedex.hide()
             self.quit_requested = True
             self._running = False
@@ -1823,6 +1856,7 @@ class PatientAnimator:
         stop.set()
 
     def close(self) -> None:
+        self._celebration.dismiss()
         self._pokedex.hide()
         pygame.key.stop_text_input()
         if self._owns_display:
