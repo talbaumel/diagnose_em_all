@@ -143,6 +143,10 @@ reset the full campaign.
 - Tab / Shift+Tab moves between the diagnosis field, Cancel, and Submit Diagnosis.
 - Cancel or Escape returns to the conversation without submitting; your chat draft is preserved.
 - Incorrect submissions leave the case open so you can continue investigating or try again.
+- A correct submission gives every patient a personal thank-you, an animated happy
+  gesture, and a brief burst of pixel confetti. It plays once per visit, stays clear
+  of the chat controls, and does not add points or finish the visit. Care planning
+  and conversation remain available throughout.
 - The stopwatch starts when the patient connection is ready and stops when you finish the visit, including care planning.
 - Click Tests Found or press F3 to review used skills, actual findings, and point rationales.
 - Click Care Plan or press F4 to add prescriptions, add referrals, or review recorded orders.
