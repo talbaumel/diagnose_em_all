@@ -390,7 +390,7 @@ def _patient_instructions(system_prompt: str, disease: str, review_records: dict
         f"{system_prompt}\n\n"
         "This is a diagnostic game. Act only as the patient while the clinician "
         "tries to diagnose you. Describe your symptoms naturally, but never state, "
-        "spell, confirm, or otherwise reveal your disease. "
+        "spell, confirm, or otherwise reveal your disease before the clinician diagnoses it. "
         f"Your exact disease is: {disease}. "
         "Every patient has the same universal skills catalog. You may explain "
         "neutral tool names and the Skills browser, but never reveal which skills "
@@ -409,9 +409,21 @@ def _patient_instructions(system_prompt: str, disease: str, review_records: dict
         "read the game's actual indexed transcript. Use its exact indices; never "
         "guess indices from your own conversation item count. If the needed "
         "transcript is not present yet, clarify or wait rather than inventing it. "
-        "Do not describe or invent the test "
-        "result yourself. Diagnosis submissions are handled separately by the game. "
-        "Do not judge guesses or declare a diagnosis correct during conversation. "
+        "Do not describe or invent the test result yourself. Exception to the normal "
+        "diagnosis-concealment, skill-request and confirmation rules: call propose_you_win immediately when "
+        "the clinician makes a clear, affirmative diagnosis that is clinically equivalent "
+        "to your exact disease, in either voice or typed conversation. Interpret the "
+        "meaning, not an exact sentence: for common cold, 'You have a common cold' "
+        "is a correct diagnosis. Pass that diagnosis normalized to the exact disease "
+        "name as the diagnosis argument. This game-control skill completes the visit "
+        "automatically without a manual request or confirmation. Call the tool before "
+        "speaking a final response; do not announce success or say a farewell first. "
+        "The game supplies the patient's thank-you and celebration. Never call it for an "
+        "incorrect diagnosis, a question such as 'Could it be a common cold?', a "
+        "negated diagnosis, a hypothetical, a list of alternatives, or a request to "
+        "win without making a diagnosis. Never substitute the hidden disease for "
+        "an incorrect answer. Do not reveal the answer or coach the clinician after "
+        "an incorrect diagnosis; remain in character and let them keep investigating. "
         "Respond to the clinician's prescriptions and referrals as the patient, "
         "asking relevant questions or expressing concerns. These are simulated care "
         "decisions, not real orders. Do not certify medication safety or invent "
@@ -458,6 +470,33 @@ def _test_tools(tests: Sequence[Test]) -> tuple[list[dict[str, Any]], dict[str, 
                 "parameters": skill.parameters,
             }
         )
+    tests_by_tool["propose_you_win"] = "you_win"
+    tools.append(
+        {
+            "type": "function",
+            "name": "propose_you_win",
+            "description": (
+                "Trigger You Win when the clinician states a correct diagnosis in voice or text. "
+                "Compare their meaning with the case disease and normalize a clinically equivalent "
+                "diagnosis to its exact name. This automatically solves the visit and starts celebration "
+                "and grading; no manual win request or confirmation is needed. Call this tool before "
+                "speaking a final response, without a farewell or success announcement first. Do not call for "
+                "incorrect diagnoses, questions, hypotheticals, negation, alternatives, or requests "
+                "to win without a diagnosis. Never replace an incorrect diagnosis with the hidden answer."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "diagnosis": {
+                        "type": "string",
+                        "description": "The clinician's stated diagnosis, normalized to the case disease name only if clinically equivalent.",
+                    },
+                },
+                "required": ["diagnosis"],
+                "additionalProperties": False,
+            },
+        }
+    )
     return tools, tests_by_tool
 
 
@@ -671,8 +710,8 @@ class PatientAnimator:
         self._drawer_hovered = False
         self._advanced_drawer_hovered = False
         self._skills_chat_was_focused = False
-        self._skills_button = pygame.Rect(234, 384, 90, 28)
-        self._discovered_tests_button = pygame.Rect(326, 34, 138, 24)
+        self._skills_button = pygame.Rect(0, 0, 0, 0)
+        self._discovered_tests_button = pygame.Rect(0, 0, 0, 0)
         self._review_open = False
         self._review_loading = False
         self._review_error = ""
@@ -692,9 +731,9 @@ class PatientAnimator:
         self._diagnosis_feedback = ""
         self._diagnosis_focus = 0
         self._chat_was_focused = False
-        self._diagnose_button = pygame.Rect(18, 384, 100, 28)
-        self._care_button = pygame.Rect(126, 384, 100, 28)
-        self._pokedex_button = pygame.Rect(332, 384, 130, 28)
+        self._diagnose_button = pygame.Rect(18, 384, 132, 28)
+        self._care_button = pygame.Rect(0, 0, 0, 0)
+        self._pokedex_button = pygame.Rect(278, 384, 184, 28)
         self._pokedex = PokedexPanel()
         self._pokedex_chat_was_focused = False
         self._care_form: CareOrderForm | None = None
@@ -771,7 +810,10 @@ class PatientAnimator:
         self._relieved_until = time.monotonic() + RELIEVED_DURATION_SECONDS
 
     def show_win(self) -> None:
-        self._celebration.dismiss()
+        if self.won:
+            return
+        self._celebration = PatientCelebration(tuple(PatientType)[self._patient_number - 1].name)
+        self._celebration.start(time.monotonic())
         self._pokedex.hide()
         self.metrics.finish()
         self._won = True
@@ -802,9 +844,7 @@ class PatientAnimator:
         if not self._ready or self.won or self.evidence_open or self._menu is not None or self._disease is None or self._care_form is not None:
             return
         if self._diagnosis_confirmed.is_set():
-            self._set_text_focus(False)
-            plan = self.metrics.care_plan
-            self._menu = ChoiceMenu("FINISH THIS VISIT?", ("Keep Consulting", "Finish Visit"), f"Diagnosis confirmed.\n{len(plan.prescriptions)} prescriptions / {len(plan.referrals)} referrals")
+            self.add_transcript("Case", "Diagnosis already confirmed. Tell the patient your diagnosis when ready.")
             return
         self._chat_was_focused = self._text_focused
         self._set_text_focus(False)
@@ -823,20 +863,6 @@ class PatientAnimator:
     def _close_diagnosis(self) -> None:
         self._diagnosis_open = False
         self._set_text_focus(self._chat_was_focused)
-
-    def _finish_consultation(self) -> None:
-        if self.skills_modal:
-            self.add_transcript("Case", "Resolve the pending skill request before finishing.")
-            return
-        if self._pokedex.open:
-            return
-        if not self._ready or self.won or not self._diagnosis_confirmed.is_set() or self.evidence_open or self._diagnosis_open or self._care_form is not None:
-            return
-        if self._sending or not self._text_messages.empty():
-            self.add_transcript("Case", "Message still pending.")
-            return
-        self.show_win()
-        self._consultation_finished.set()
 
     def _open_care_menu(self) -> None:
         if self.skills_modal or self._pokedex.open:
@@ -1191,9 +1217,6 @@ class PatientAnimator:
 
         elapsed = self._status_font.render(f"TIME {format_duration(self.metrics.elapsed_seconds)}", True, UI_GOLD)
         self._screen.blit(elapsed, elapsed.get_rect(topright=(464, 13)))
-        pygame.draw.rect(self._screen, UI_TEAL, self._discovered_tests_button, border_radius=5)
-        discovered = self._status_font.render(f"TESTS FOUND {len(self.metrics.discovered_tests)}", True, UI_WHITE)
-        self._screen.blit(discovered, discovered.get_rect(center=self._discovered_tests_button.center))
         status_text, status_color = self._status(state)
         pygame.draw.rect(self._screen, UI_PANEL, (292, 70, 172, 22), border_radius=5)
         status = self._status_font.render(status_text, True, status_color)
@@ -1318,22 +1341,15 @@ class PatientAnimator:
         pygame.draw.rect(self._screen, UI_TEAL, (0, 374, 480, 3))
         pygame.draw.rect(self._screen, UI_CORAL, (0, 374, 92, 3))
 
-        enabled = self._ready and self._disease is not None and not self.won
+        enabled = self._ready and not self.won
         pygame.draw.rect(self._screen, UI_TEAL if enabled else (91, 119, 116), self._diagnose_button, border_radius=5)
-        label = self._status_font.render("FINISH VISIT" if self._diagnosis_confirmed.is_set() else "DIAGNOSE", True, UI_WHITE)
+        label = self._status_font.render("GIVE UP", True, UI_WHITE)
         self._screen.blit(label, label.get_rect(center=self._diagnose_button.center))
-        pygame.draw.rect(self._screen, UI_TEAL if enabled else (91, 119, 116), self._care_button, border_radius=5)
-        care_label = self._status_font.render("CARE PLAN", True, UI_WHITE)
-        self._screen.blit(care_label, care_label.get_rect(center=self._care_button.center))
-        pygame.draw.rect(self._screen, UI_TEAL if enabled else (91, 119, 116), self._skills_button, border_radius=5)
-        skills_label = self._status_font.render("SKILLS / F5", True, UI_WHITE)
-        self._screen.blit(skills_label, skills_label.get_rect(center=self._skills_button.center))
-        helper_enabled = self._ready and not self.won
         helper_hovered = self._pokedex_button.collidepoint(self._screen_position(pygame.mouse.get_pos()))
         helper_color = UI_WHITE if helper_hovered else UI_PAPER
-        pygame.draw.rect(self._screen, helper_color if helper_enabled else (193, 211, 207), self._pokedex_button, border_radius=5)
+        pygame.draw.rect(self._screen, helper_color if enabled else (193, 211, 207), self._pokedex_button, border_radius=5)
         pygame.draw.rect(self._screen, UI_TEAL, self._pokedex_button, width=1, border_radius=5)
-        pokedex_label = self._status_font.render("Dragon Copilot", True, UI_INK)
+        pokedex_label = self._status_font.render("Dragon Simulator Assist", True, UI_INK)
         brand_width = pokedex_label.get_width() + 32
         brand_x = self._pokedex_button.centerx - brand_width // 2
         if self._pokedex.button_logo is not None:
@@ -1765,7 +1781,7 @@ class PatientAnimator:
             self._draw_evidence()
         if self._diagnosis_open and not self.won:
             self._draw_diagnosis()
-        if self.won:
+        if self.won and not self._celebration.active(time.monotonic()):
             self._draw_win()
         self._draw_scene_fade()
         if self._menu is not None and not self.evidence_open and not self.won:
@@ -1856,9 +1872,6 @@ class PatientAnimator:
                 if self._menu.title == "CARE PLAN":
                     self._set_text_focus(self._care_chat_was_focused)
                 self._menu = None
-            elif choice == "Finish Visit":
-                self._menu = None
-                self._finish_consultation()
             elif choice in ("Add Prescription", "Add Referral"):
                 self._menu = None
                 self._care_form = CareOrderForm("prescription" if choice == "Add Prescription" else "referral")
@@ -1937,15 +1950,10 @@ class PatientAnimator:
             elif self._text_input_rect.collidepoint(position):
                 self._set_text_focus(True)
             elif self._diagnose_button.collidepoint(position):
-                self._open_diagnosis()
-            elif self._care_button.collidepoint(position):
-                self._open_care_menu()
-            elif self._skills_button.collidepoint(position):
-                self._open_skills()
+                self._running = False
+                stop.set()
             elif self._pokedex_button.collidepoint(position):
                 self._open_pokedex()
-            elif self._discovered_tests_button.collidepoint(position):
-                self._show_discovered_tests()
             elif self._text_send_button.collidepoint(position):
                 self._submit_text()
             else:
@@ -1999,7 +2007,7 @@ async def _resolve_skill_call(
     evidence_audio: dict[str, str] | None = None,
     origin: str = "conversation",
 ) -> dict:
-    """Validate, obtain real local approval, then execute exactly one proposal."""
+    """Validate and execute a win, or obtain local approval for a medical skill."""
     engine = animator.skill_engine
     if engine is None:
         raise RuntimeError("Skill engine has not been initialized")
@@ -2041,6 +2049,32 @@ async def _resolve_skill_call(
         parameters = json.loads(arguments)
         if not isinstance(parameters, dict):
             raise ValueError("Skill parameters must be an object.")
+        if skill_id == "you_win":
+            if set(parameters) != {"diagnosis"} or not isinstance(parameters["diagnosis"], str):
+                raise ValueError("You Win requires the clinician's stated diagnosis.")
+            if not animator._disease or not _diagnosis_matches(parameters["diagnosis"], animator._disease):
+                raise ValueError("Diagnosis not confirmed; continue the consultation without revealing the answer.")
+            while animator._menu or animator._diagnosis_open or animator._care_form or animator._skill_browser or animator.evidence_open or animator._pokedex.open:
+                if not is_current():
+                    break
+                await asyncio.sleep(0.02)
+            if not is_current() or animator.won:
+                result = {
+                    "status": "cancelled", "name": "You Win",
+                    "result": "Win action is no longer current; visit state unchanged.", "points": 0,
+                }
+            else:
+                result = {
+                    "status": "completed", "name": "You Win",
+                    "result": "Visit completed successfully.", "points": 0,
+                }
+                animator._diagnosis_confirmed.set()
+                animator.add_transcript("Diagnosis", parameters["diagnosis"])
+                animator.show_win()
+                animator._consultation_finished.set()
+            record["status"] = result["status"]
+            animator.add_transcript("Skill", f"You Win: {result['status']}. {result['result']}")
+            return result
         proposal = engine.prepare(skill_id, parameters, tuple(animator._transcript))
         # Do not discard another modal or its draft when a tool response arrives.
         while animator._menu or animator._diagnosis_open or animator._care_form or animator._skill_browser or animator.evidence_open or animator._pokedex.open:

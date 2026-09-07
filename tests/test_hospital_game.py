@@ -361,6 +361,9 @@ class MovementTests(unittest.TestCase):
 
 class HospitalFlowTests(unittest.TestCase):
     def setUp(self):
+        splash_patch = patch("src.hospital_game.show_splash", return_value=True)
+        splash_patch.start()
+        self.addCleanup(splash_patch.stop)
         root = Path(__file__).resolve().parents[1]
         self.scenarios = load_patient_scenarios(sorted((root / "data/prompts").glob("*.json")))
         pygame.init()

@@ -1,0 +1,26 @@
+Create one finished square 1024 x 1024 bitmap splash screen for the medical adventure game "Diagnose Em' All". This image will be displayed directly in a game: all lettering and branding must be beautifully drawn into the image. Do not make a mockup, a screen within a screen, or a sheet of options.
+
+Reference image 1 is the Dragon Copilot logo. Reproduce this exact multicolor loop/flame silhouette faithfully in the footer, with the yellow/orange left tip, warm red/pink base, and green/cyan/blue right side. Keep its proportions, white interior opening, and recognizable shape. Do not invent a different symbol.
+
+Reference image 2 is this game's existing hospital environment. Use it as the subject and palette reference for a bright, welcoming illustrated hospital scene beneath the title. Retain the mint corridors, blue treatment rooms, beds, reception desk, and small medical details, but compose them as intentional polished game key art rather than a faded screenshot. No patients in distress, no blood, no scary imagery.
+
+Art direction: premium hand-illustrated Japanese handheld adventure game title art. Cheerful, precise, richly finished, clean ink contours, crisp details and restrained soft painted shading. Light white and pale mint background with a very subtle paper texture; balanced yellow, cobalt blue, coral, and green accents. No dark mode, no beige or purple-dominated background. Spacious composition with a strong readable title, not crowded clip art. No card frames or UI controls.
+
+At the top center, occupying roughly the top 40 percent, draw an original custom hand-lettered game logo reading exactly:
+Diagnose
+Em' All
+
+The title must read together as "Diagnose Em' All", including the apostrophe AFTER Em. Use energetic but carefully balanced chunky yellow lettering with a clean rich-blue outline and a small dimensional blue shadow, reminiscent of classic Pokemon-era adventure title lettering, but draw a new cohesive logo for these words. Do not write Pokemon. Do not use generic computer font typesetting or the jagged irregular crowding of a novelty font. Each letter must be distinct and legible, with consistent visual weight and natural spacing. Do not overlap, merge or distort the letters. Give the two lines a coherent compact composition and gentle expressive curves, with ample margins.
+
+Directly below the title, centered and very legible against an uncluttered light background, include exactly this lowercase tagline on one line:
+inspiring the doctors of tomorrow
+
+Place the colorful hospital illustration across the lower middle, roughly 54 to 80 percent of the image height. It should be clear and delightful at game-window size, with no illustration intruding into the text. Let the art blend naturally into the light background, without rectangular screenshot borders.
+
+At the bottom center, within a quiet light footer area, include the reference Dragon Copilot logo next to the exact text:
+powered by
+Dragon Copilot
+
+The small "powered by" sits above the more prominent "Dragon Copilot". Use deep teal, crisp readable supporting lettering with the logo beside it. Keep the entire footer comfortably above the bottom edge, all content inside a 6 percent safe margin. The footer must look like a carefully arranged sponsor credit, not another headline.
+
+The only text anywhere in the image is "Diagnose Em' All", "inspiring the doctors of tomorrow", "powered by", and "Dragon Copilot". No other words, no watermarks, no signatures, no buttons, no progress bar, no explanatory copy. All four phrases must be spelled exactly as provided, readable, non-overlapping and fully inside the canvas.

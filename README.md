@@ -103,6 +103,15 @@ should use their own registered Microsoft Entra application.
 
 ## Run
 
+Each launch opens a four-second generated splash illustration with the title
+"Diagnose Em' All", "inspiring the doctors of tomorrow", and the Dragon Copilot
+logo. Enter, Space, or a left click skips to the hospital; Escape or closing the
+window exits without saving. It does not replay between consultations.
+The entire splash, including lettering and branding, is a bundled
+[bitmap image](data/sprites/ui/splash_screen.png), with no splash font or live
+image-generation dependency. Its [generation prompt](data/sprites/ui/splash_screen_prompt.txt)
+is retained alongside the full-resolution artwork.
+
 ```bash
 uv run python -m src.debug_example
 ```
@@ -137,7 +146,7 @@ reset the full campaign.
 - Hold either Shift key to speak, then **release Shift** to let the patient
   respond or propose a test. The game will not open a new confirmation while
   push-to-talk is held. Click the text field and press Enter to type.
-- In chat, diagnosis, care-plan text fields and Dragon Copilot, use Cmd+V on
+- In chat, diagnosis, care-plan text fields and Dragon Simulator Assist, use Cmd+V on
   macOS (Ctrl+V elsewhere) to paste. Cmd/Ctrl+A selects the whole field;
   Cmd/Ctrl+C copies and Cmd/Ctrl+X cuts the selection. Pasted line breaks become
   spaces; pasting never sends a message, submits a diagnosis or orders a test.
@@ -169,7 +178,7 @@ reset the full campaign.
   prerequisites before confirmation. These are forms, not machines stored in a
   drawer. Escape backs out and F8 closes the drawer. **F5** still browses all skills,
   including histories and examinations that do not use these drawers.
-- Submit the correct diagnosis, discuss the care plan, then choose Finish Visit to complete the case.
+- State your diagnosis to the patient by voice or text. A correct diagnosis triggers You Win, the celebration, and the scorecard automatically. Click Give Up to return without solving the case.
 - Help patient 01 to unlock the Patient Ward.
 - Help patient 02 to unlock the Pharmacy Lounge.
 - Return to the same hospital position and find the next patient.
@@ -191,7 +200,7 @@ reset the full campaign.
   with a large reading for temperature. **Details / D** opens the full report,
   any original evidence image, and the scoring explanation. Illustrations never
   replace patient-specific findings; the full results also remain in Used skills.
-- Click Diagnose or press F2 to open the final diagnosis dialog.
+- Press F2 to open the diagnosis dialog.
 - Enter a diagnosis and click Submit Diagnosis or press Enter to commit it.
 - Tab / Shift+Tab moves between the diagnosis field, Cancel, and Submit Diagnosis.
 - Cancel or Escape returns to the conversation without submitting; your chat draft is preserved.
@@ -201,11 +210,12 @@ reset the full campaign.
   of the chat controls, and does not add points or finish the visit. Care planning
   and conversation remain available throughout.
 - The stopwatch starts when the patient connection is ready and stops when you finish the visit, including care planning.
-- Click Tests Found or press F3 to review used skills, actual findings, and point rationales.
-- Click Care Plan or press F4 to add prescriptions, add referrals, or review recorded orders.
-- Click Skills or press F5 to browse the entire shared catalog for any patient. Use Up/Down, Page Up/Page Down, Home/End or the mouse wheel; Enter or click opens details and illustrated art. Details scroll independently. Enter or Draft Request fills the chat draft without sending it. Escape returns or closes.
-- Click the Dragon Copilot logo-and-text button to ask for help during the visit. F6 also opens it; Escape, F6, or Return to Patient closes the helper.
-- After confirming a diagnosis, the Diagnose button becomes Finish Visit (also F2). Confirm to end the call and open the scorecard.
+- Press F3 to review used skills, actual findings, and point rationales.
+- Press F4 to add prescriptions, add referrals, or review recorded orders.
+- Press F5 to browse the entire shared catalog for any patient. Use Up/Down, Page Up/Page Down, Home/End or the mouse wheel; Enter or click opens details and illustrated art. Details scroll independently. Enter or Draft Request fills the chat draft without sending it. Escape returns or closes.
+- Click Dragon Simulator Assist or press F6 to open the helper; Escape, F6, or Return to Patient closes it.
+- Give Up and Dragon Simulator Assist are the only visit-action buttons. Give Up returns to the hospital without solving the case, so the patient remains sick and no scorecard opens.
+- The patient calls the universal You Win skill after a clear, correct diagnosis, such as "You have a common cold." No manual win request or confirmation is needed. Incorrect diagnoses, questions, negation, and lists of alternatives leave the visit active.
 
 The hospital pauses when unfocused; a consultation does not. Losing focus
 releases push-to-talk. Returning to the hospital cancels the unfinished case.
@@ -215,17 +225,21 @@ Chat input and transcripts support Russian and Hebrew, including right-to-left
 Hebrew text mixed with English and numbers. Chat uses bundled DejaVu Sans fonts
 so no system font installation is needed; their license is in [data/fonts/LICENSE](data/fonts/LICENSE).
 
-Only an explicit diagnosis submission followed by Finish Visit can close a case.
-Mentioning a diagnosis in voice or text chat does not count, and the patient model
-cannot declare a win. Diagnosis submissions
-are checked locally against the configured `disease` name, ignoring capitalization,
-spacing, and punctuation separators. Use the condition name rather than a sentence;
-synonyms, abbreviations, and lists of possible diagnoses are not accepted in this
-version. The microphone is disabled while the diagnosis dialog is open.
+The patient model interprets spoken and typed diagnoses semantically and calls
+You Win when the player's stated diagnosis matches the case. The tool includes
+the normalized diagnosis, which the game checks against the configured `disease`
+before solving the case. Simply requesting a win is not a diagnosis. The happy
+gesture and confetti play before the call closes and grading begins.
 
-## Dragon Copilot
+The optional F2 diagnosis dialog remains a local check and does not finish the
+visit; tell the patient your diagnosis to complete it. This dialog checks the
+configured condition name, ignoring capitalization, spacing, and punctuation
+separators, rather than interpreting sentences, synonyms, or abbreviations.
+The microphone is disabled while the diagnosis dialog is open.
 
-The in-visit Dragon Copilot helper uses the HAS HealthBot Direct Line protocol from the HAS Bench
+## Dragon Simulator Assist
+
+The in-visit Dragon Simulator Assist helper uses the HAS HealthBot Direct Line protocol from the HAS Bench
 observability component's underlying client. It is separate from the patient model
 and MAI scoring. Type a question and press Enter or Send; scroll responses with the
 mouse wheel or Page Up / Page Down. Your patient-chat draft is preserved. The patient
@@ -284,8 +298,8 @@ while a form is open.
 Issuing an order records it and sends its details to the patient as a conversation
 message, so you can discuss it during the call. Identical duplicate orders are ignored.
 Review Orders shows all recorded prescriptions and referrals. Neither is mandatory:
-you may finish a visit without prescribing or referring when appropriate. Finish Visit
-waits for pending outgoing messages to be sent. Order records and the transcript are
+you may solve a visit without prescribing or referring when appropriate. State your
+diagnosis when ready to complete the visit. Order records and the transcript are
 included in the final review but are not stored in local saves.
 
 ## Patient audio
@@ -306,7 +320,8 @@ failures have distinct in-game recovery messages.
 
 ## Consultation Review
 
-After Finish Visit, the realtime call closes and a scrollable review opens.
+After the patient triggers You Win for a correct diagnosis and the celebration finishes,
+the realtime call closes and a scrollable review opens.
 The first screen shows a compact numerical overview: Tests discovered (for example,
 2/86), separate appropriate-use points, and all eight AI scores out of 100,
 followed by the detailed feedback.
@@ -515,15 +530,20 @@ example phrasings and parameter schemas. There is no fixed-sentence dispatcher
 and no patient-relevance or point information in the tool descriptions.
 Underspecified requests such as "blood tests" or "sequence it" require clarification.
 Negated, hypothetical, educational and mention-only requests must not invoke a
-procedure. As a second safeguard, **nothing executes or scores until you approve
-the interpreted action locally**. Cancel is the default; Tab/Left/Right changes
+procedure. As a second safeguard, **no medical skill executes or scores until you approve
+the interpreted action locally**. You Win is a separate diagnosis-based game action
+and does not award medical skill points or require confirmation. Cancel is the default; Tab/Left/Right changes
 selection, Enter confirms the selected button, and Escape cancels. Long details
 scroll. Misrecognitions can therefore be cancelled without a completed procedure.
 
-Complete tool batches are processed in order with one model continuation per
-batch. Replayed call IDs are ignored, incomplete/cancelled model responses do not
-execute, and repeated or overlapping procedures cannot farm points. Finish Visit
-waits while a skill proposal or evidence report is pending. History, diary review,
+Medical tools are processed in order after patient audio, with one model continuation
+per batch. You Win is prioritized within a completed response and does not wait for
+final speech playback. The patient is instructed to call it before a final spoken
+reply; a validated win interrupts any remaining speech and starts the celebration.
+An invalid win leaves ordinary audio and medical-skill confirmation intact.
+Replayed call IDs are ignored, incomplete/cancelled model responses do not execute,
+and repeated or overlapping procedures cannot farm points. You Win still waits for
+an already-open modal or evidence report to close. History, diary review,
 pedigree and counseling skills require the relevant conversation/review, not just
 ordering the skill or making a counseling referral.
 
@@ -589,7 +609,7 @@ do not start a second game while an existing instance is running. When ready:
 3. Ask "blood tests" and "sequence it"; expect clarification, not execution. Supply the missing specimen/target when appropriate.
 4. Try a negated request, a hypothetical and an educational question. No execution should occur; cancel any erroneous proposal and verify no completed action or points.
 5. Request temperature twice and a compound request with overlapping components; confirm intended actions and verify no duplicate credit or charge.
-6. Cancel a proposal, inspect used results, then submit the diagnosis, discuss care, Finish Visit, review separate points/AI feedback, and save/resume hospital progress.
+6. Cancel a proposal, inspect used results, then state the correct diagnosis to trigger You Win, review separate points/AI feedback, and save/resume hospital progress.
 
 ## Project layout
 

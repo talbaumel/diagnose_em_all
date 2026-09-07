@@ -28,7 +28,7 @@ class PokedexPanelTests(unittest.IsolatedAsyncioTestCase):
         await self.panel.task
         self.client.ask.assert_awaited_once()
         self.assertEqual(self.panel.draft, "")
-        self.assertEqual(self.panel.messages[-1][0], "Dragon Copilot")
+        self.assertEqual(self.panel.messages[-1][0], "Dragon Simulator Assist")
         self.panel.draw(self.screen)
         self.assertGreater(self.panel.max_scroll, 0)
         self.panel.handle_event(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_PAGEUP), (0, 0), {})
@@ -66,7 +66,7 @@ class PokedexPanelTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.panel.draft, "Help")
         self.panel.submit({})
         await self.panel.task
-        self.assertEqual(self.panel.messages[-1], ("Dragon Copilot", "Try this."))
+        self.assertEqual(self.panel.messages[-1], ("Dragon Simulator Assist", "Try this."))
 
     async def test_focus_loss_does_not_accept_text(self):
         self.panel.focus(False)
@@ -93,6 +93,6 @@ class PokedexPanelTests(unittest.IsolatedAsyncioTestCase):
         self.panel.handle_event(click, self.panel.send_button.center, {"transcript": []})
         await self.panel.task
         self.client.ask.assert_awaited_once_with("What next?", {"transcript": []})
-        self.assertEqual(self.panel.messages[-1][0], "Dragon Copilot")
+        self.assertEqual(self.panel.messages[-1][0], "Dragon Simulator Assist")
         self.panel.handle_event(click, self.panel.close_button.center, {})
         self.assertFalse(self.panel.open)

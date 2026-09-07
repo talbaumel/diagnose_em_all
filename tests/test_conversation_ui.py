@@ -42,8 +42,8 @@ class AudioEvidenceTests(unittest.TestCase):
         self.assertEqual(scenario.performance_profile.clip_path, COUGH_PATH.with_name("dry_01_short.wav"))
         self.assertIn("call the cough symptom tool", scenario.system_prompts)
         tools, by_name = _test_tools(scenario.tests)
-        self.assertEqual(len(tools), len(load_catalog()))
-        self.assertEqual(set(by_name.values()), {skill.id for skill in load_catalog()})
+        self.assertEqual(len(tools), len(load_catalog()) + 1)
+        self.assertEqual(set(by_name.values()), {skill.id for skill in load_catalog()} | {"you_win"})
         self.assertTrue(all(test.audio is None for test in scenario.tests))
         self.assertNotIn("assets/", json.dumps(tools))
 
@@ -198,8 +198,10 @@ class ConversationUITests(unittest.TestCase):
         self.assertIsNone(self.animator._skill_browser)
         self.animator._ready = True
         self.animator._diagnosis_confirmed.set()
-        self.animator._finish_consultation()
+        self.animator.show_win()
         self.key(pygame.K_F7)
+        self.animator._request_local_skill("temperature")
+        self.assertTrue(self.animator.won)
         self.assertTrue(self.animator._local_skill_requests.empty())
         self.assertIsNone(self.animator._skill_browser)
 
@@ -249,23 +251,29 @@ class ConversationUITests(unittest.TestCase):
                 self.assertIn("Tests discovered: 0/8", texts)
                 self.assertIn(f"Clinical knowledge: {expected}", texts)
 
-    def test_pokedex_toolbar_leaves_room_for_patient_speaking(self):
-        self.assertLessEqual(self.animator._pokedex_button.right, 462)
-        self.assertFalse(self.animator._pokedex_button.colliderect(self.animator._care_button))
+    def test_give_up_and_copilot_toolbar_leaves_room_for_patient_speaking(self):
+        self.assertLessEqual(self.animator._diagnose_button.right, 462)
+        self.assertFalse(self.animator._diagnose_button.colliderect(self.animator._pokedex_button))
         self.assertLess(self.animator._text_send_button.bottom, 461)
         self.assertLess(self.animator._text_input_rect.bottom, 461)
-        for button, label in ((self.animator._diagnose_button, "FINISH VISIT"), (self.animator._care_button, "CARE PLAN"), (self.animator._pokedex_button, "Dragon Copilot")):
-            self.assertLessEqual(self.animator._status_font.size(label)[0] + 16, button.width)
+        self.assertLessEqual(self.animator._status_font.size("GIVE UP")[0] + 16, self.animator._diagnose_button.width)
+        self.assertLessEqual(self.animator._status_font.size("Dragon Simulator Assist")[0] + 32, self.animator._pokedex_button.width)
 
-    def test_dragon_copilot_opens_and_closes_by_click_at_scaled_sizes(self):
+    def test_dragon_copilot_clicks_and_removed_visit_buttons_do_not(self):
         self.addCleanup(pygame.display.set_mode, self.window.get_size())
         for size in (480, 720, 960):
             self.window = pygame.display.set_mode((size, size))
             self.animator._window = self.window
-            for button in (self.animator._pokedex_button, self.animator._pokedex.close_button):
+            position = tuple(round(coordinate * size / 480) for coordinate in self.animator._pokedex_button.center)
+            self.animator.handle_event(pygame.event.Event(pygame.MOUSEBUTTONUP, button=1, pos=position), self.stop)
+            self.assertTrue(self.animator._pokedex.open)
+            self.animator._pokedex.hide()
+            for button in (self.animator._care_button, self.animator._skills_button, self.animator._discovered_tests_button):
                 position = tuple(round(coordinate * size / 480) for coordinate in button.center)
                 self.animator.handle_event(pygame.event.Event(pygame.MOUSEBUTTONUP, button=1, pos=position), self.stop)
-                self.assertEqual(self.animator._pokedex.open, button == self.animator._pokedex_button)
+                self.assertIsNone(self.animator._menu)
+                self.assertFalse(self.animator._pokedex.open)
+                self.assertFalse(self.animator.evidence_open)
             self.assertFalse(self.stop.is_set())
 
     def test_pokedex_isolates_chat_and_restores_patient_draft(self):
@@ -337,14 +345,14 @@ class ConversationUITests(unittest.TestCase):
         self.animator._submit_text()
         self.assertTrue(self.animator._text_messages.empty())
 
-    def test_chat_diagnosis_does_not_win(self):
+    def test_chat_diagnosis_waits_for_patient_win_tool(self):
         self.animator._text_input = "common cold"
         self.animator._submit_text()
         self.assertFalse(self.animator.won)
         self.assertFalse(self.animator._diagnosis_confirmed.is_set())
         self.assertEqual(self.animator._text_messages.get_nowait(), "common cold")
 
-    def test_explicit_diagnosis_keeps_call_open_until_finished(self):
+    def test_explicit_diagnosis_keeps_call_open_until_you_win(self):
         self.animator._diagnosis_open = True
         self.animator._diagnosis_input = " Common-COLD. "
         self.animator._submit_diagnosis()
@@ -354,9 +362,8 @@ class ConversationUITests(unittest.TestCase):
         self.assertFalse(self.animator._diagnosis_open)
         self.assertTrue(self.animator._text_messages.empty())
         self.assertEqual(len(self.animator._transcript), 2)
-        self.animator._finish_consultation()
-        self.assertTrue(self.animator.won)
-        self.assertTrue(self.animator._consultation_finished.is_set())
+        self.assertFalse(self.animator.won)
+        self.assertFalse(self.animator._consultation_finished.is_set())
 
     def test_all_patients_celebrate_without_changing_scores_or_completing(self):
         for path in sorted((ROOT / "data/prompts").glob("*.json")):
@@ -400,7 +407,7 @@ class ConversationUITests(unittest.TestCase):
             self.assertEqual(self.animator._celebration.started_at, 1000)
             self.assertEqual(self.animator._transcript, transcript)
 
-    def test_celebration_keeps_chat_care_and_finish_available(self):
+    def test_celebration_keeps_chat_care_and_give_up_available(self):
         with patch("src.realtime_conversation.time.monotonic", return_value=1000):
             self.animator._text_input = "Let's discuss your care."
             self.animator._set_text_focus(True)
@@ -417,15 +424,15 @@ class ConversationUITests(unittest.TestCase):
             self.assertIsNotNone(self.animator._menu)
             self.key(pygame.K_ESCAPE)
             self.key(pygame.K_F2)
-            self.assertIsNotNone(self.animator._menu)
-            self.animator._menu = None
-            self.animator._finish_consultation()
+            self.assertIn(
+                ("Case", "Diagnosis already confirmed. Tell the patient your diagnosis when ready."),
+                self.animator._transcript,
+            )
             self.assertFalse(self.animator.won)
-            self.animator._sending = False
-            self.animator._finish_consultation()
-            self.assertTrue(self.animator._consultation_finished.is_set())
-            self.assertFalse(self.animator._celebration.active(1000))
-            self.assertEqual(self.animator._celebration._particles, ())
+            self.click(self.animator._diagnose_button)
+            self.assertTrue(self.stop.is_set())
+            self.assertFalse(self.animator._running)
+            self.assertFalse(self.animator._consultation_finished.is_set())
 
     def test_celebration_layer_leaves_other_ui_pixels_untouched(self):
         with patch("src.realtime_conversation.time.monotonic", return_value=1000.6):
@@ -467,13 +474,32 @@ class ConversationUITests(unittest.TestCase):
         self.assertIsNone(self.animator._celebration.started_at)
         self.assertFalse(self.animator._diagnosis_confirmed.is_set())
 
-    def test_finished_visit_does_not_flash_at_end_of_relief_animation(self):
+    def test_case_closed_waits_until_win_dance_and_confetti_finish(self):
+        with patch("src.realtime_conversation.time.monotonic", return_value=1000) as clock:
+            self.animator._scene_started_at = 990
+            self.animator.show_win()
+            with patch.object(self.animator, "_draw_win", wraps=self.animator._draw_win) as draw_win:
+                for elapsed in (0, .6, 1.4, CELEBRATION_SECONDS - .01):
+                    with self.subTest(elapsed=elapsed):
+                        clock.return_value = 1000 + elapsed
+                        self.animator.draw(elapsed)
+                        self.assertTrue(self.animator.won)
+                        self.assertTrue(self.animator._celebration.active(clock.return_value))
+                        draw_win.assert_not_called()
+                clock.return_value = 1000 + CELEBRATION_SECONDS + .01
+                self.animator.draw(CELEBRATION_SECONDS + .01)
+                draw_win.assert_called_once()
+                self.assertFalse(self.animator._celebration.active(clock.return_value))
+                self.assertLess(clock.return_value, self.animator._relieved_until)
+
+    def test_you_win_does_not_flash_at_end_of_relief_animation(self):
         with patch("src.realtime_conversation.time.monotonic", return_value=1000) as clock:
             self.animator._scene_started_at = 990
             self.animator._open_diagnosis()
             self.animator._diagnosis_input = "common cold"
             self.animator._submit_diagnosis()
-            self.animator._finish_consultation()
+            self.animator.show_win()
+            self.animator._consultation_finished.set()
             deadline = self.animator._relieved_until
             for offset in (-.4, -.2, -.01, 0, .01, .2):
                 with self.subTest(offset=offset):
@@ -509,14 +535,12 @@ class ConversationUITests(unittest.TestCase):
                     expected = pygame.transform.scale(self.animator._screen, (size, size))
                     self.assertEqual(pygame.image.tobytes(self.animator._window, "RGB"), pygame.image.tobytes(expected, "RGB"))
 
-    def test_finish_requires_diagnosis_and_does_not_drop_pending_messages(self):
-        self.animator._finish_consultation()
+    def test_give_up_returns_without_winning_or_healing_patient(self):
+        self.click(self.animator._diagnose_button)
+        self.assertTrue(self.stop.is_set())
+        self.assertFalse(self.animator._running)
         self.assertFalse(self.animator.won)
-        self.animator._diagnosis_confirmed.set()
-        self.animator._text_input = "Let us discuss your care plan."
-        self.animator._submit_text()
-        self.animator._finish_consultation()
-        self.assertFalse(self.animator.won)
+        self.assertNotEqual(self.animator._current_state(), "relieved")
         self.assertFalse(self.animator._consultation_finished.is_set())
 
     def test_incorrect_diagnosis_allows_retry_without_revealing_answer(self):
@@ -563,7 +587,7 @@ class ConversationUITests(unittest.TestCase):
     def test_diagnosis_dialog_preserves_chat_draft_and_blocks_microphone(self):
         self.animator._text_input = "How long has this lasted?"
         self.animator._set_text_focus(True)
-        self.click(self.animator._diagnose_button)
+        self.key(pygame.K_F2)
         self.assertTrue(self.animator._diagnosis_open)
         self.key(pygame.K_LSHIFT)
         self.animator.handle_event(pygame.event.Event(pygame.TEXTINPUT, text="migraine"), self.stop)
@@ -589,14 +613,16 @@ class ConversationUITests(unittest.TestCase):
         self.key(pygame.K_F2)
         self.key(pygame.K_DOWN)
         self.key(pygame.K_RETURN)
-        self.assertTrue(self.animator.won)
+        self.assertTrue(self.animator._diagnosis_confirmed.is_set())
+        self.assertFalse(self.animator.won)
 
-    def test_diagnosis_click_submission_and_cancel(self):
-        self.click(self.animator._diagnose_button)
+    def test_diagnosis_mouse_submission_and_cancel(self):
+        self.key(pygame.K_F2)
+        self.assertTrue(self.animator._diagnosis_open)
         self.click(self.animator._diagnosis_cancel_button)
         self.assertFalse(self.animator._diagnosis_open)
         self.assertFalse(self.animator.won)
-        self.click(self.animator._diagnose_button)
+        self.key(pygame.K_F2)
         self.animator.handle_event(pygame.event.Event(pygame.TEXTINPUT, text="common cold"), self.stop)
         self.click(self.animator._diagnosis_submit_button)
         self.assertTrue(self.animator._diagnosis_confirmed.is_set())
@@ -1116,6 +1142,22 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
             result = await _run_conversation("patient", "common cold", 0, [], window=self.window)
         self.assertEqual(result, ConversationResult.SOLVED_QUIT)
 
+    async def test_give_up_returns_unsolved_without_opening_review(self):
+        async def session(prompt, disease, index, tests, animator, stop, **kwargs):
+            await stop.wait()
+            return False
+
+        async def animation(animator, stop):
+            animator._running = False
+            stop.set()
+
+        with patch("src.realtime_conversation._conversation_session", session), patch.object(
+            PatientAnimator, "run", animation,
+        ), patch("src.realtime_conversation._show_consultation_review", new=AsyncMock()) as review:
+            result = await _run_conversation("patient", "common cold", 0, [], window=self.window)
+        self.assertEqual(result, ConversationResult.RETURNED)
+        review.assert_not_awaited()
+
     async def test_finished_visit_exports_skill_score_before_review_failure_or_quit(self):
         from src.diagnostic_skills import SkillEngine
         from src.patient_performance import PerformanceProfile
@@ -1222,21 +1264,20 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(cancelled.is_set())
         self.assertTrue(animator.won)
 
-    async def test_realtime_win_event_is_ignored_and_explicit_submission_finishes(self):
-        processed = asyncio.Event()
+    async def test_realtime_typed_diagnosis_triggers_patient_win_without_confirmation(self):
+        await self._assert_realtime_diagnosis_win(voice=False)
+
+    async def test_realtime_voice_diagnosis_triggers_patient_win_without_confirmation(self):
+        await self._assert_realtime_diagnosis_win(voice=True)
+
+    async def _assert_realtime_diagnosis_win(self, *, voice):
         receiver_closed = asyncio.Event()
-        care_sent = asyncio.Event()
         incoming = asyncio.Queue()
         response_count = 0
 
         async def send(payload):
             nonlocal response_count
             event = json.loads(payload)
-            item = event.get("item", {})
-            if item.get("call_id") == "test-2":
-                processed.set()
-            if item.get("type") == "message" and item["content"][0]["text"].startswith("I am prescribing"):
-                care_sent.set()
             if event["type"] == "response.create":
                 response_count += 1
                 response_id = f"response-{response_count}"
@@ -1244,27 +1285,27 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
                 if response_count == 1:
                     for name, call_id in (
                         ("win", "untrusted"),
-                        ("propose_temperature", "test-1"),
-                        ("propose_temperature", "test-2"),
+                        ("propose_you_win", "you-win"),
                     ):
                         await incoming.put({
                             "type": "response.function_call_arguments.done",
                             "response_id": response_id, "name": name, "call_id": call_id,
                         })
-                    await incoming.put({
-                        "type": "conversation.item.input_audio_transcription.completed",
-                        "transcript": "common cold", "item_id": "voice",
-                    })
+                    if voice:
+                        await incoming.put({
+                            "type": "conversation.item.input_audio_transcription.completed",
+                            "transcript": "You have a common cold", "item_id": "voice",
+                        })
                 await incoming.put({
                     "type": "response.done",
                     "response": {
                         "id": response_id, "status": "completed",
                         "output": [
-                            {"type": "function_call", "name": name, "call_id": call_id, "arguments": "{}"}
+                            {"type": "function_call", "name": name, "call_id": call_id,
+                             "arguments": json.dumps({"diagnosis": "common cold"})}
                             for name, call_id in (
                                 ("win", "untrusted"),
-                                ("propose_temperature", "test-1"),
-                                ("propose_temperature", "test-2"),
+                                ("propose_you_win", "you-win"),
                             )
                         ] if response_count == 1 else [],
                     },
@@ -1299,8 +1340,9 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
 
         animator = PatientAnimator(0, window=self.window, disease="common cold")
         self.addCleanup(animator.close)
+        animator._text_input = "Hello" if voice else "You have a common cold"
+        animator._submit_text()
         animator._ready = False
-        animator._text_messages.put_nowait("Please check my temperature")
         stop = asyncio.Event()
         sink = RecordingSink()
         with (
@@ -1311,42 +1353,30 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
             patch.object(sink, "abort", wraps=sink.abort) as abort,
             patch("src.realtime_conversation.RELIEVED_DURATION_SECONDS", 0.01),
             patch.object(PatientAnimator, "wait_for_evidence_close", close_evidence),
-            patch.object(PatientAnimator, "confirm_skill", new=AsyncMock(return_value=True)),
+            patch.object(PatientAnimator, "confirm_skill", new=AsyncMock()) as confirm,
         ):
             task = asyncio.create_task(_conversation_session("patient", "common cold", 0, [Test("Temperature", "38 C")], animator, stop))
             try:
-                await asyncio.wait_for(processed.wait(), 2)
+                async def wait_for_win():
+                    while not animator.won:
+                        await asyncio.sleep(0)
+                await asyncio.wait_for(wait_for_win(), 2)
                 async def wait_for_skills():
                     while animator._skills_busy:
                         await asyncio.sleep(0)
                 await asyncio.wait_for(wait_for_skills(), 2)
                 configuration = json.loads(websocket.send.call_args_list[0].args[0])["session"]
                 self.assertNotIn("win", [tool["name"] for tool in configuration["tools"]])
-                self.assertEqual(len(configuration["tools"]), len(load_catalog()) + 1)
-                self.assertFalse(animator.won)
-                self.assertFalse(stop.is_set())
-                self.assertIn(("You", "common cold"), animator._transcript)
-                self.assertIn("38.0", next(iter(animator.metrics.discovered_tests.values())))
+                self.assertEqual(len(configuration["tools"]), len(load_catalog()) + 2)
+                self.assertIn("propose_you_win", [tool["name"] for tool in configuration["tools"]])
+                self.assertTrue(animator.won)
+                self.assertIn(("You", "You have a common cold"), animator._transcript)
+                self.assertIsNotNone(animator._celebration.started_at)
+                self.assertTrue(animator._diagnosis_confirmed.is_set())
+                confirm.assert_not_awaited()
                 self.assertIsNotNone(animator.metrics.started_at)
-                animator._open_diagnosis()
-                animator._diagnosis_input = "migraine"
-                animator._submit_diagnosis()
-                self.assertFalse(animator.won)
-                self.assertFalse(task.done())
-                animator._diagnosis_input = "common cold"
-                animator._submit_diagnosis()
-                self.assertFalse(animator.won)
-                self.assertFalse(task.done())
-                prescription = Prescription("Example medication", "Player-entered directions", "Symptom relief")
-                animator._record_care_order(prescription)
-                animator._open_care_menu()
-                await asyncio.wait_for(care_sent.wait(), 2)
-                sent_items = [json.loads(call.args[0]) for call in websocket.send.call_args_list]
-                self.assertTrue(any(event.get("item", {}).get("content") == [{"type": "input_text", "text": prescription.message()}] for event in sent_items))
-                self.assertFalse(animator.won)
-                animator._menu = None
-                animator._finish_consultation()
                 self.assertTrue(await asyncio.wait_for(task, 2))
+                self.assertTrue(stop.is_set())
                 self.assertIsNotNone(animator.metrics.finished_at)
                 self.assertTrue(stop.is_set())
                 self.assertTrue(receiver_closed.is_set())

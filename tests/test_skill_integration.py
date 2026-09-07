@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 import unittest
 from unittest.mock import AsyncMock, patch
 
@@ -31,8 +32,8 @@ class ToolSchemaTests(unittest.TestCase):
         tools, other = _test_tools([Test("temperature", "37 C")])
         self.assertEqual(tools, empty_tools)
         self.assertEqual(mapping, other)
-        self.assertEqual(len(tools), len(load_catalog()))
-        for skill, tool in zip(load_catalog(), tools):
+        self.assertEqual(len(tools), len(load_catalog()) + 1)
+        for skill, tool in zip(load_catalog(), tools[:-1]):
             self.assertEqual(tool["name"], f"propose_{skill.id}")
             self.assertLessEqual(len(tool["name"]), 64)
             self.assertEqual(tool["parameters"], skill.parameters)
@@ -40,6 +41,22 @@ class ToolSchemaTests(unittest.TestCase):
             for phrase in (*skill.aliases, *skill.examples):
                 self.assertIn(phrase, tool["description"])
             self.assertNotIn("points", tool["description"].lower())
+        self.assertEqual(tools[-1]["name"], "propose_you_win")
+        self.assertEqual(mapping["propose_you_win"], "you_win")
+        self.assertEqual(tools[-1]["parameters"]["required"], ["diagnosis"])
+        self.assertEqual(tools[-1]["parameters"]["properties"]["diagnosis"]["type"], "string")
+        self.assertFalse(tools[-1]["parameters"]["additionalProperties"])
+
+    def test_patient_triggers_win_for_correct_diagnosis_not_a_manual_request(self):
+        instructions = _patient_instructions("Fictional patient", "common cold")
+        for phrase in ("call propose_you_win immediately", "You have a common cold",
+                       "without a manual request or confirmation", "incorrect diagnosis",
+                       "negated diagnosis", "list of alternatives", "Could it be a common cold?"):
+            self.assertIn(phrase, instructions)
+        self.assertNotIn("never because you judged a diagnosis", instructions)
+        self.assertIn("no manual win request or confirmation", _test_tools([])[0][-1]["description"])
+        self.assertIn("Call the tool before speaking a final response", instructions)
+        self.assertIn("Call this tool before speaking a final response", _test_tools([])[0][-1]["description"])
 
     def test_prompt_guardrails_are_not_claimed_as_live_routing_proof(self):
         instructions = _patient_instructions("Fictional patient", "common cold")
@@ -102,6 +119,48 @@ class SkillIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
 
+    async def test_you_win_correct_diagnosis_triggers_success_without_confirmation(self):
+        self.animator.add_transcript("You", "You have a common cold")
+        call = self.call('{"diagnosis":"common cold"}', name="propose_you_win")
+        with patch.object(self.animator, "confirm_skill", new=AsyncMock()) as confirm:
+            completed = await _resolve_skill_call(call, _test_tools([])[1], self.animator)
+            confirm.assert_not_awaited()
+        self.assertEqual(completed["status"], "completed")
+        self.assertEqual(completed["points"], 0)
+        self.assertTrue(self.animator.won)
+        self.assertTrue(self.animator._diagnosis_confirmed.is_set())
+        self.assertTrue(self.animator._consultation_finished.is_set())
+        self.assertEqual(self.animator._current_state(), "relieved")
+        self.assertTrue(self.animator._celebration.active(time.monotonic()))
+        self.assertEqual(self.animator.skill_engine.score, 0)
+
+    async def test_you_win_does_not_repeat_completion_or_restart_celebration(self):
+        call = self.call('{"diagnosis":"common cold"}', name="propose_you_win")
+        await self.resolve(call)
+        started_at = self.animator._celebration.started_at
+        finished_at = self.animator.metrics.finished_at
+        result = await self.resolve(call)
+        self.assertEqual(result["status"], "cancelled")
+        self.assertEqual(self.animator._celebration.started_at, started_at)
+        self.assertEqual(self.animator.metrics.finished_at, finished_at)
+
+    async def test_you_win_missing_or_incorrect_diagnosis_never_completes(self):
+        for parameters in ({}, {"diagnosis": "migraine"}, {"diagnosis": "not common cold"},
+                           {"diagnosis": ""}, {"diagnosis": None}, {"diagnosis": ["common cold"]},
+                           {"diagnosis": "common cold", "extra": True}):
+            with self.subTest(parameters=parameters):
+                result = await self.resolve(self.call(json.dumps(parameters), "propose_you_win"))
+                self.assertEqual(result["status"], "clarification_required")
+                self.assertFalse(self.animator.won)
+                self.assertFalse(self.animator._consultation_finished.is_set())
+
+    async def test_you_win_interrupted_call_never_completes(self):
+        call = self.call('{"diagnosis":"common cold"}', name="propose_you_win")
+        result = await _resolve_skill_call(call, _test_tools([])[1], self.animator, lambda: False)
+        self.assertEqual(result["status"], "cancelled")
+        self.assertFalse(self.animator.won)
+        self.assertFalse(self.animator._consultation_finished.is_set())
+
     async def test_pcr_clarifies_before_confirmation_and_cancels_without_result(self):
         with patch.object(self.animator, "confirm_skill", new=AsyncMock()) as confirm:
             for parameters in ({}, {"specimen": "nasal_swab"}, {"target": "influenza_A_B"},
@@ -148,7 +207,6 @@ class SkillIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.animator._diagnosis_confirmed.set()
         self.animator._push_to_talk.set()
         self.animator._submit_text()
-        self.animator._finish_consultation()
         self.assertFalse(self.animator.won)
         self.assertFalse(self.animator.push_to_talk)
         self.assertTrue(self.animator._text_messages.empty())

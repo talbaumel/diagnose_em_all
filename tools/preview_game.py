@@ -17,6 +17,7 @@ from src.hospital_game import (
 )
 from src.realtime_conversation import PatientAnimator, Test
 from src.game_ui import ChoiceMenu
+from src.splash_screen import SplashScreen, show_splash
 from src.care_plan_ui import CareOrderForm
 from src.consultation_review import AxisScore, ConsultationMetrics, ConsultationScorecard, SCORE_AXES
 
@@ -37,13 +38,16 @@ def main() -> None:
     navigator._scene_started_at = -1000
     if arguments.interactive:
         try:
-            navigator.run()
+            if show_splash(window):
+                navigator.run()
         finally:
             pygame.quit()
             loop.close()
             asyncio.set_event_loop(None)
         return
     arguments.output_dir.mkdir(parents=True, exist_ok=True)
+    SplashScreen().draw(window, 1.5)
+    pygame.image.save(window, str(arguments.output_dir / "splash.png"))
     navigator.draw()
     pygame.image.save(window, str(arguments.output_dir / "hospital.png"))
     for index, (name, _) in enumerate(PLAYER_DANCES):
@@ -149,12 +153,12 @@ def main() -> None:
     animator._open_pokedex()
     animator._pokedex.messages = [
         ("You", "What should I ask next?"),
-        ("Dragon Copilot", "Clarify symptom duration and progression. Ask about fever, breathing difficulty, hydration, and relevant exposures.\n\nThese are questions to investigate, not findings already established."),
+        ("Dragon Simulator Assist", "Clarify symptom duration and progression. Ask about fever, breathing difficulty, hydration, and relevant exposures.\n\nThese are questions to investigate, not findings already established."),
     ]
     animator._pokedex.draft = "Which findings would change the next step?"
     animator.draw(0.3)
     pygame.image.save(window, str(arguments.output_dir / "pokedex.png"))
-    animator._pokedex.messages.append(("Dragon Copilot", "Review the history and reassess warning signs. " * 40 + "\nhttps://example.org/" + "reference" * 20))
+    animator._pokedex.messages.append(("Dragon Simulator Assist", "Review the history and reassess warning signs. " * 40 + "\nhttps://example.org/" + "reference" * 20))
     animator.draw(0.3)
     pygame.image.save(window, str(arguments.output_dir / "pokedex_long.png"))
     animator._pokedex.messages.append(("Connection", "HAS bot startup or delivery failed (HTTP 502). Check the configured bot and scenario, then retry."))
@@ -192,7 +196,8 @@ def main() -> None:
     if referral is not None:
         animator.metrics.care_plan.add(referral)
     animator._care_form = None
-    animator._finish_consultation()
+    animator.show_win()
+    animator._consultation_finished.set()
     animator.draw(0.3)
     pygame.image.save(window, str(arguments.output_dir / "solved.png"))
     animator._review_open = True
