@@ -8,8 +8,9 @@ import binascii
 import json
 import logging
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass, field
+from typing import Any
 
 from src.audio_playback import AudioPlaybackError, MAX_AUDIO_BYTES, PlaybackController, Segment
 from src.patient_performance import CoughPolicy, PerformanceProfile, read_pcm_clip
@@ -19,7 +20,15 @@ from src.cue_timing import internal_pauses, insert_cue
 
 LOGGER = logging.getLogger(__name__)
 EvidencePresenter = Callable[[object], Awaitable[dict]]
-SkillHandler = Callable[[dict, Callable[[], bool], EvidencePresenter], Awaitable[dict]]
+SkillHandler = Callable[[dict, Callable[[], bool], EvidencePresenter], Coroutine[Any, Any, dict]]
+
+
+def _task_is_cancelling() -> bool:
+    task = asyncio.current_task()
+    if task is None:
+        return False
+    cancelling = getattr(task, "cancelling", None)
+    return bool(cancelling()) if cancelling is not None else bool(getattr(task, "_must_cancel", False))
 
 
 @dataclass
@@ -219,10 +228,11 @@ class ConversationRuntime:
                         return audio
                     self.processing_task = asyncio.create_task(prepare())
                     try:
-                        audio = await self.processing_task
+                        audio = await asyncio.shield(self.processing_task)
                     except asyncio.CancelledError:
-                        current = asyncio.current_task()
-                        if current is not None and current.cancelling():
+                        if not self.processing_task.done():
+                            self.processing_task.cancel()
+                            await asyncio.gather(self.processing_task, return_exceptions=True)
                             raise
                         # An interruption cancelled the old utterance, not the processor loop.
                         continue
@@ -241,10 +251,11 @@ class ConversationRuntime:
                             # Pure bounded analysis, off the event loop. Old results are generation-checked.
                             self.processing_task = asyncio.create_task(asyncio.to_thread(internal_pauses, audio))
                             try:
-                                pauses = await self.processing_task
+                                pauses = await asyncio.shield(self.processing_task)
                             except asyncio.CancelledError:
-                                current = asyncio.current_task()
-                                if current is not None and current.cancelling():
+                                if not self.processing_task.done():
+                                    self.processing_task.cancel()
+                                    await asyncio.gather(self.processing_task, return_exceptions=True)
                                     raise
                                 continue
                             except ValueError as error:
@@ -259,10 +270,11 @@ class ConversationRuntime:
                                         insert_cue, audio, self.cue_audio[cue_id], pause,
                                     ))
                                     try:
-                                        insertion = await self.processing_task
+                                        insertion = await asyncio.shield(self.processing_task)
                                     except asyncio.CancelledError:
-                                        current = asyncio.current_task()
-                                        if current is not None and current.cancelling():
+                                        if not self.processing_task.done():
+                                            self.processing_task.cancel()
+                                            await asyncio.gather(self.processing_task, return_exceptions=True)
                                             raise
                                         continue
                                     except ValueError as error:
@@ -544,11 +556,12 @@ class ConversationRuntime:
         while True:
             response = await self.boundaries.get()
             try:
-                if response.tickets:
-                    await asyncio.gather(*response.tickets)
                 if response.cancelled:
+                    if response.tickets:
+                        await asyncio.gather(*response.tickets)
                     continue
                 calls = list(response.calls.values())
+                calls.sort(key=lambda call: call["name"] != "propose_you_win")
                 diagnostic = any(
                     call["name"] in self.tests or self._is_skill_call(call["name"])
                     and call["name"] != "get_skill_context" for call in calls
@@ -556,6 +569,8 @@ class ConversationRuntime:
                 context_only = bool(calls) and all(call["name"] == "get_skill_context" for call in calls)
                 for call in calls:
                     name = call["name"]
+                    if name != "propose_you_win" and response.tickets and not self.animator.won:
+                        await asyncio.gather(*response.tickets)
                     current = response.generation == self.playback.generation
                     if not current or self.stop.is_set() or self.animator.won:
                         result = (
@@ -564,22 +579,29 @@ class ConversationRuntime:
                         )
                         await self.tool_result(call["call_id"], result)
                     elif self._is_skill_call(name):
-                        self.skill_task = asyncio.create_task(self.skill_handler(
+                        handler = self.skill_handler
+                        if handler is None:
+                            raise RuntimeError("Skill handler is unavailable")
+                        self.skill_task = asyncio.create_task(handler(
                             call, lambda: response.generation == self.playback.generation
                             and not self.stop.is_set() and not self.animator.won,
                             lambda test: self.present_evidence(response, call["call_id"], test),
                         ))
                         try:
-                            result = await self.skill_task
-                            if asyncio.current_task().cancelling():
+                            result = await asyncio.shield(self.skill_task)
+                            if _task_is_cancelling():
                                 raise asyncio.CancelledError
                         except asyncio.CancelledError:
-                            if asyncio.current_task().cancelling():
+                            if _task_is_cancelling() or not self.skill_task.done():
+                                self.skill_task.cancel()
+                                await asyncio.gather(self.skill_task, return_exceptions=True)
                                 raise
                             result = {"status": "cancelled", "result": "Response interrupted before action.", "points": 0}
                         finally:
                             self.skill_task = None
                         await self.tool_result(call["call_id"], result)
+                        if name == "propose_you_win" and self.animator.won:
+                            await self.interrupt()
                     elif name in self.tests:
                         test = self.tests[name]
                         self.animator.metrics.discover_test(
@@ -598,6 +620,8 @@ class ConversationRuntime:
                         await self.tool_result(call["call_id"], {"status": status})
                     else:
                         await self.tool_result(call["call_id"], {"status": "skipped", "reason": "unknown tool"})
+                if response.tickets and not self.animator.won:
+                    await asyncio.gather(*response.tickets)
                 self._release_skills(response)
                 if response.generation != self.playback.generation or self.animator.won or self.stop.is_set():
                     continue

@@ -138,6 +138,90 @@ class SkillRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Rhinovirus/enterovirus: detected", findings[0]["result"])
         self.assertIn("Influenza A: not detected", findings[0]["result"])
 
+    async def test_you_win_precedes_pending_final_speech_and_medical_skills(self):
+        release_audio = asyncio.Event()
+
+        async def process(pcm):
+            await release_audio.wait()
+            return pcm
+
+        self.runtime.speech_processor = process
+        self.animator.add_transcript("You", "You have a common cold")
+        await self.begin()
+        for kind, payload in (
+            ("response.output_audio.delta", {"delta": base64.b64encode(b"\1\0" * 2400).decode()}),
+            ("response.output_audio_transcript.done", {"transcript": "Thank you, doctor."}),
+            ("response.content_part.done", {}),
+        ):
+            self.runtime.handle({"type": kind, "response_id": "r", "item_id": "speech", **payload})
+        ticket = self.runtime.responses["r"].tickets[0]
+        win = self.call("win", "propose_you_win")
+        win["arguments"] = json.dumps({"diagnosis": "common cold"})
+        self.done([self.call(), win])
+        await until(lambda: self.animator.won and not self.animator._skills_busy)
+        self.assertFalse(release_audio.is_set())
+        self.assertEqual(self.sink.history, [])
+        self.assertNotIn(("Patient", "Thank you, doctor."), self.animator._transcript)
+        self.assertTrue(ticket.done())
+        self.assertEqual(self.runtime.processing_bytes, 0)
+        self.assertEqual(self.runtime.playback.queued_bytes, 0)
+        self.assertTrue(self.animator._consultation_finished.is_set())
+        self.assertIsNone(self.animator._skill_confirmation)
+        self.assertEqual(self.animator.skill_engine.actions, [])
+        self.assertEqual([result["status"] for _, result in self.outputs()], ["completed", "cancelled"])
+        self.assertEqual(len(self.sent("response.create")), 1)
+
+    async def test_you_win_interrupts_final_speech_already_playing(self):
+        self.runtime.inline_cues = False
+        self.animator.add_transcript("You", "You have a common cold")
+        await self.begin()
+        for kind, payload in (
+            ("response.output_audio.delta", {"delta": base64.b64encode(b"\1\0" * 2400).decode()}),
+            ("response.output_audio_transcript.done", {"transcript": "Thank you, doctor."}),
+            ("response.content_part.done", {}),
+        ):
+            self.runtime.handle({"type": kind, "response_id": "r", "item_id": "speech", **payload})
+        await until(lambda: bool(self.sink.history))
+        self.sink.ready = True
+        self.sink.heard_ms = 60
+        await until(lambda: self.runtime.playback.started)
+        win = self.call("win", "propose_you_win")
+        win["arguments"] = json.dumps({"diagnosis": "common cold"})
+        self.runtime.handle({**win, "type": "response.function_call_arguments.done", "response_id": "r"})
+        await asyncio.sleep(0)
+        self.assertFalse(self.animator.won)
+        self.done([win])
+        await until(lambda: self.animator.won and not self.animator._skills_busy)
+        self.assertFalse(self.sink.done)
+        self.assertTrue(self.animator._consultation_finished.is_set())
+        self.assertEqual(self.sent("conversation.item.truncate")[-1]["audio_end_ms"], 60)
+        self.assertEqual([result["status"] for _, result in self.outputs()], ["completed"])
+
+    async def test_rejected_you_win_preserves_speech_before_medical_skills(self):
+        await self.begin()
+        pcm = b"\1\0" * 2400
+        for kind, payload in (
+            ("response.output_audio.delta", {"delta": base64.b64encode(pcm).decode()}),
+            ("response.output_audio_transcript.done", {"transcript": "My nose is still running."}),
+            ("response.content_part.done", {}),
+        ):
+            self.runtime.handle({"type": kind, "response_id": "r", "item_id": "speech", **payload})
+        win = self.call("win", "propose_you_win")
+        win["arguments"] = json.dumps({"diagnosis": "migraine"})
+        self.done([self.call(), win])
+        await until(lambda: len(self.outputs()) == 1 and bool(self.sink.history))
+        self.assertEqual(self.outputs()[0][1]["status"], "clarification_required")
+        self.assertFalse(self.animator.won)
+        self.assertIsNone(self.animator._skill_confirmation)
+        self.assertEqual(self.sink.history, [pcm])
+        self.assertEqual(self.sent("conversation.item.truncate"), [])
+        self.sink.ready = self.sink.done = True
+        await until(lambda: self.animator._skill_confirmation is not None)
+        self.decide(False)
+        await until(lambda: not self.animator._skills_busy)
+        self.assertEqual([result["status"] for _, result in self.outputs()], ["clarification_required", "cancelled"])
+        self.assertFalse(self.animator._consultation_finished.is_set())
+
     async def test_terminal_batch_waits_for_processed_speech_and_skips_cue(self):
         await self.begin()
         pcm = b"\1\0" * 2400
@@ -150,7 +234,6 @@ class SkillRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.done([self.call("cough", "cough"), self.call()])
         self.assertTrue(self.animator._skills_busy)
         self.animator._diagnosis_confirmed.set()
-        self.animator._finish_consultation()
         self.assertFalse(self.animator.won)
         await until(lambda: bool(self.sink.history))
         self.assertEqual(self.sink.history, [pcm])
@@ -392,16 +475,12 @@ class SkillRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.animator._text_input, "Patient draft")
         self.assertTrue(self.animator._text_focused)
 
-    async def test_toolbar_and_modals_do_not_overlap_or_steal_input(self):
-        buttons = (self.animator._diagnose_button, self.animator._care_button,
-                   self.animator._skills_button, self.animator._pokedex_button)
-        for index, button in enumerate(buttons):
-            for other in buttons[index + 1:]:
-                self.assertFalse(button.colliderect(other))
+    async def test_give_up_and_copilot_toolbar_and_modals_do_not_steal_input(self):
         self.assertLessEqual(
-            self.animator._status_font.size("Dragon Copilot")[0] + 32,
-            self.animator._pokedex_button.width,
+            self.animator._status_font.size("GIVE UP")[0] + 16,
+            self.animator._diagnose_button.width,
         )
+        self.assertFalse(self.animator._diagnose_button.colliderect(self.animator._pokedex_button))
         self.animator.handle_event(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_F5), self.stop)
         self.animator.handle_event(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_F6), self.stop)
         self.assertFalse(self.animator._pokedex.open)

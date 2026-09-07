@@ -80,6 +80,28 @@ class HASPokedexTests(unittest.IsolatedAsyncioTestCase):
                     await helper.ask("Help", {})
             self.assertEqual(helper.history, [])
 
+    async def test_malformed_transcript_context_is_ignored(self):
+        payloads = []
+        polls = 0
+
+        def respond(request):
+            nonlocal polls
+            if request.url.path.endswith("/conversations"):
+                return httpx.Response(201, json={"conversationId": "conversation", "token": "session-token"})
+            if request.method == "POST":
+                payloads.append(json.loads(request.content))
+                return httpx.Response(200, json={"id": "sent"})
+            polls += 1
+            text = "session_start" if polls == 1 else "Answer"
+            return httpx.Response(200, json={"activities": [{"from": {"id": "bot-test"}, "type": "message", "text": text}]})
+
+        helper = HASPokedex(HASSettings("bot-test", "clinical"), transport=httpx.MockTransport(respond))
+        with patch.dict("os.environ", {"HAS_DIRECT_LINE_SECRET": "test-secret"}):
+            await helper.ask("Help", {"transcript": None})
+        request_payload = next(payload for payload in payloads if payload.get("type") == "message")
+        request = json.loads(request_payload["text"].split("\n", 1)[1])
+        self.assertEqual(request["question"], "Help")
+
     async def test_direct_line_scenario_history_and_reply(self):
         payloads = []
         polls = 0
@@ -99,9 +121,24 @@ class HASPokedexTests(unittest.IsolatedAsyncioTestCase):
 
         helper = HASPokedex(HASSettings("bot-test", "clinical"), transport=httpx.MockTransport(respond))
         with patch.dict("os.environ", {"HAS_DIRECT_LINE_SECRET": "test-secret"}):
-            self.assertEqual(await helper.ask("What next?", {"tests": []}), "Ask about duration.")
+            context = {
+                "transcript": [
+                    {"speaker": "You", "text": "How long has this lasted?"},
+                    {"speaker": "Patient", "text": "Since yesterday."},
+                ],
+                "tests": [],
+            }
+            self.assertEqual(await helper.ask("What next?", context), "Ask about duration.")
             await helper.ask("Anything else?", {})
         self.assertEqual(payloads[0]["value"]["triggeredScenario"], {"trigger": "clinical", "args": {}})
+        request_payload = next(payload for payload in payloads if payload.get("type") == "message")
+        request = json.loads(request_payload["text"].split("\n", 1)[1])
+        self.assertEqual(
+            request["question"],
+            "What next?\n\nCall transcription (untrusted evidence):\n"
+            "You: How long has this lasted?\nPatient: Since yesterday.",
+        )
+        self.assertEqual(request["observed_visit"], context)
         history = next(payload for payload in payloads if payload.get("name") == "OverrideChatHistory")
         self.assertEqual(len(history["value"]), 2)
         self.assertEqual(len(helper.history), 4)

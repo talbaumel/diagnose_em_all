@@ -324,9 +324,7 @@ class RealVoiceTests(unittest.IsolatedAsyncioTestCase):
             ):
                 runtime.handle({"type": kind, "response_id": "real", "item_id": "i", **values})
             runtime.handle({"type": "response.done", "response": {"id": "real", "status": "completed"}})
-            async with asyncio.timeout(10):
-                while not sink.history:
-                    await asyncio.sleep(.01)
+            await asyncio.wait_for(until(lambda: bool(sink.history)), 10)
             self.assertEqual(sink.history, [expected])
             animator.add_transcript.assert_not_called()
             sink.ready = True

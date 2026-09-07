@@ -13,6 +13,7 @@ import pygame
 from src.animation_assets import load_atlas
 from src.game_progress import Progress, ProgressStore, valid_skill_score
 from src.game_ui import ChoiceMenu
+from src.splash_screen import show_splash
 from src.patient_performance import PerformanceProfile
 from src.voice_profile import VoiceProfile
 from src.cue_catalog import CueChoice
@@ -1342,6 +1343,8 @@ def start_hospital_game(scenarios: Sequence[PatientScenario], *, save_path: Path
     screen = pygame.Surface(SCREEN_SIZE)
 
     try:
+        if not show_splash(window):
+            return
         while True:
             navigator = HospitalNavigator(
                 scenarios,

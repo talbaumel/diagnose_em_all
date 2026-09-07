@@ -72,7 +72,7 @@ class PokedexPanel:
             return
         self.messages.append(("You", question))
         self.scroll = 0
-        self.status = "Consulting Dragon Copilot..."
+        self.status = "Consulting Dragon Simulator Assist..."
 
         async def answer() -> None:
             try:
@@ -84,7 +84,7 @@ class PokedexPanel:
                 self.messages.append(("Connection", "HAS Key Vault access failed. Check Azure sign-in and permission to read the configured secret."))
                 self.status = "Sign-in or access required"
             else:
-                self.messages.append(("Dragon Copilot", text))
+                self.messages.append(("Dragon Simulator Assist", text))
                 if self.draft.strip() == question:
                     self.draft = ""
                     self.editing.reset()
@@ -132,7 +132,7 @@ class PokedexPanel:
         pygame.draw.rect(screen, coral, (0, 79, 112, 3))
         if self.header_logo is not None:
             screen.blit(self.header_logo, (18, 15))
-        screen.blit(self.title_font.render("Dragon Copilot", True, paper), (70, 12))
+        screen.blit(self.title_font.render("Dragon Simulator Assist", True, paper), (70, 12))
         status = self.label_font.render(self.status, True, (193, 231, 215))
         status_rect = status.get_rect(topleft=(70, 48))
         screen.blit(status, status_rect)
@@ -164,7 +164,7 @@ class PokedexPanel:
         pygame.draw.rect(screen, (255, 255, 251), self.input_rect, border_radius=5)
         pygame.draw.rect(screen, coral if self.focused else teal, self.input_rect, width=2, border_radius=5)
         input_area = self.input_rect.inflate(-16, -10)
-        text = self.font.render(self.draft or "Ask Dragon Copilot...", True, ink)
+        text = self.font.render(self.draft or "Ask Dragon Simulator Assist...", True, ink)
         rectangle = text.get_rect(midleft=(input_area.x, input_area.centery))
         if rectangle.width > input_area.width:
             rectangle.right = input_area.right - 3
