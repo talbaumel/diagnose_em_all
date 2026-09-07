@@ -13,7 +13,7 @@ import pygame
 from src.animation_assets import load_atlas
 from src.game_progress import Progress, ProgressStore, valid_skill_score
 from src.game_ui import ChoiceMenu
-from src.splash_screen import show_splash
+from src.splash_screen import configure_app_icon, show_splash
 from src.patient_performance import PerformanceProfile
 from src.voice_profile import VoiceProfile
 from src.cue_catalog import CueChoice
@@ -1339,6 +1339,7 @@ def start_hospital_game(scenarios: Sequence[PatientScenario], *, save_path: Path
     player_position = progress.position
     notice = store.warning
     pygame.init()
+    configure_app_icon()
     window = pygame.display.set_mode(WINDOW_SIZE)
     screen = pygame.Surface(SCREEN_SIZE)
 

@@ -6,7 +6,7 @@ from unittest.mock import patch
 import pygame
 
 from src.hospital_game import start_hospital_game
-from src.splash_screen import BACKGROUND, SPLASH_IMAGE, SPLASH_SECONDS, SplashScreen, show_splash
+from src.splash_screen import APP_ICON, BACKGROUND, SPLASH_IMAGE, SPLASH_SECONDS, SplashScreen, configure_app_icon, show_splash
 
 
 class SplashScreenTests(unittest.TestCase):
@@ -31,6 +31,23 @@ class SplashScreenTests(unittest.TestCase):
                 expected.fill(BACKGROUND)
                 expected.blit(pygame.transform.smoothscale(artwork, viewport.size), viewport)
                 self.assertEqual(pygame.image.tostring(window, "RGB"), pygame.image.tostring(expected, "RGB"))
+
+    def test_configure_app_icon_loads_and_sets_icon(self):
+        icon = pygame.Surface((64, 64), pygame.SRCALPHA)
+        with patch("src.splash_screen.pygame.image.load", return_value=icon) as load, patch(
+            "src.splash_screen.pygame.display.set_icon"
+        ) as set_icon:
+            configure_app_icon()
+        load.assert_called_once_with(str(APP_ICON))
+        set_icon.assert_called_once_with(icon)
+
+    def test_app_icon_is_a_squircle_visible_at_dock_size(self):
+        icon = pygame.image.load(str(APP_ICON))
+        self.assertEqual(icon.get_size(), (1024, 1024))
+        self.assertTrue(all(icon.get_at(corner).a == 0 for corner in ((0, 0), (1023, 0), (0, 1023), (1023, 1023))))
+        self.assertTrue(all(icon.get_at(midpoint).a == 255 for midpoint in ((512, 64), (959, 512), (512, 959), (64, 512))))
+        dock_icon = pygame.transform.smoothscale(icon, (64, 64))
+        self.assertGreater(pygame.mask.from_surface(dock_icon).count(), 500)
 
     def test_entrance_animation_changes_pixels(self):
         splash = SplashScreen()

@@ -6,10 +6,15 @@ import pygame
 
 
 ASSETS = Path(__file__).resolve().parents[1] / "data"
+APP_ICON = ASSETS / "sprites/ui/app_icon.png"
 SPLASH_IMAGE = ASSETS / "sprites/ui/splash_screen.png"
 SPLASH_SECONDS = 4.0
 TITLE = "Diagnose Em' All"
 BACKGROUND = (242, 249, 245)
+
+
+def configure_app_icon() -> None:
+    pygame.display.set_icon(pygame.image.load(str(APP_ICON)))
 
 
 class SplashScreen:
@@ -19,7 +24,9 @@ class SplashScreen:
     def draw(self, window: pygame.Surface, elapsed: float) -> None:
         viewport = self._artwork.get_rect().fit(window.get_rect())
         frame = pygame.transform.smoothscale(self._artwork, viewport.size)
-        frame.set_alpha(round(255 * min(1.0, max(0.0, elapsed) / 0.3)))
+        alpha = round(255 * min(1.0, max(0.0, elapsed) / 0.3))
+        if alpha < 255:
+            frame.set_alpha(alpha)
         window.fill(BACKGROUND)
         window.blit(frame, viewport)
 
