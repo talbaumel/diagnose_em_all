@@ -98,7 +98,6 @@ UI_GOLD = (244, 184, 72)
 UI_MUTED = (127, 151, 146)
 UI_WHITE = (255, 255, 251)
 SCENE_FADE_SECONDS = 0.28
-SCENE_EXIT_FADE_SECONDS = 0.35
 
 
 def extract_character(frame: pygame.Surface) -> pygame.Surface:
@@ -1215,7 +1214,8 @@ class PatientAnimator:
         layer.blit(caption, (218, 126))
         layer.set_clip(None)
         layer.set_alpha(self._celebration.opacity(now))
-        self._screen.blit(layer, (0, 0))
+        # Preserve Cocoa's framebuffer alpha when the overlay reaches full opacity.
+        self._screen.blit(layer, (0, 0), special_flags=pygame.BLEND_ALPHA_SDL2)
 
     def _draw_send_icon(self) -> None:
         center_x, center_y = self._text_send_button.center
@@ -1396,19 +1396,8 @@ class PatientAnimator:
     def _draw_scene_fade(self) -> None:
         now = time.monotonic()
         intro_progress = (now - self._scene_started_at) / SCENE_FADE_SECONDS
-        intro_alpha = 0
         if intro_progress < 1:
-            intro_alpha = round(255 * (1 - max(0.0, intro_progress)) ** 2)
-
-        exit_alpha = 0
-        if self.won:
-            remaining = self._relieved_until - now
-            if 0 <= remaining < SCENE_EXIT_FADE_SECONDS:
-                progress = 1 - remaining / SCENE_EXIT_FADE_SECONDS
-                exit_alpha = round(255 * progress * progress)
-
-        alpha = max(intro_alpha, exit_alpha)
-        if alpha:
+            alpha = round(255 * (1 - max(0.0, intro_progress)) ** 2)
             overlay = pygame.Surface(SCREEN_SIZE, pygame.SRCALPHA)
             overlay.fill((*UI_INK, alpha))
             self._screen.blit(overlay, (0, 0))

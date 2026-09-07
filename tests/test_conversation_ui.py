@@ -313,6 +313,26 @@ class ConversationUITests(unittest.TestCase):
             self.animator.close()
             self.assertFalse(self.animator._celebration.active(1000.6))
 
+    def test_celebration_preserves_native_framebuffer_alpha_through_fade(self):
+        # Cocoa's display format has an alpha mask even on non-SRCALPHA surfaces.
+        masks = (0x00FF0000, 0x0000FF00, 0x000000FF, 0xFF000000)
+        self.animator._screen = pygame.Surface((480, 480), depth=32, masks=masks)
+        output = pygame.Surface((720, 720), depth=32, masks=masks)
+        self.animator._celebration.start(1000)
+        with patch("src.realtime_conversation.time.monotonic") as clock:
+            for elapsed in (0, .02, .08, .15, .3, 2.9, 3.02, 3.2, 3.38, 3.41):
+                with self.subTest(elapsed=elapsed):
+                    clock.return_value = 1000 + elapsed
+                    self.animator._screen.fill((100, 150, 200, 255))
+                    self.animator._draw_celebration()
+                    area = self.animator._screen.subsurface((0, 0, 100, 290))
+                    self.assertEqual(
+                        pygame.image.tobytes(area, "RGBA"),
+                        bytes((100, 150, 200, 255)) * 100 * 290,
+                    )
+                    pygame.transform.scale(self.animator._screen, output.get_size(), output)
+                    self.assertEqual(output.get_at((45, 270)), (100, 150, 200, 255))
+
     def test_cancelling_diagnosis_does_not_celebrate(self):
         self.animator._open_diagnosis()
         self.animator._diagnosis_input = "common cold"
@@ -320,6 +340,36 @@ class ConversationUITests(unittest.TestCase):
         self.animator._submit_diagnosis()
         self.assertIsNone(self.animator._celebration.started_at)
         self.assertFalse(self.animator._diagnosis_confirmed.is_set())
+
+    def test_finished_visit_does_not_flash_at_end_of_relief_animation(self):
+        with patch("src.realtime_conversation.time.monotonic", return_value=1000) as clock:
+            self.animator._scene_started_at = 990
+            self.animator._open_diagnosis()
+            self.animator._diagnosis_input = "common cold"
+            self.animator._submit_diagnosis()
+            self.animator._finish_consultation()
+            deadline = self.animator._relieved_until
+            for offset in (-.4, -.2, -.01, 0, .01, .2):
+                with self.subTest(offset=offset):
+                    clock.return_value = deadline + offset
+                    self.animator._screen.fill((100, 150, 200))
+                    before = pygame.image.tobytes(self.animator._screen, "RGB")
+                    self.animator._draw_scene_fade()
+                    self.assertEqual(pygame.image.tobytes(self.animator._screen, "RGB"), before)
+            self.assertTrue(self.animator._consultation_finished.is_set())
+
+    def test_scene_entry_fade_still_expires_without_restarting_after_celebration(self):
+        with patch("src.realtime_conversation.time.monotonic", return_value=1000) as clock:
+            self.animator._scene_started_at = 1000
+            self.animator._screen.fill((100, 150, 200))
+            self.animator._draw_scene_fade()
+            self.assertNotEqual(self.animator._screen.get_at((0, 0))[:3], (100, 150, 200))
+            self.animator._celebration.start(1001)
+            for now in (1001, 1001 + CELEBRATION_SECONDS - .01, 1001 + CELEBRATION_SECONDS + .01):
+                clock.return_value = now
+                self.animator._screen.fill((100, 150, 200))
+                self.animator._draw_scene_fade()
+                self.assertEqual(self.animator._screen.get_at((0, 0))[:3], (100, 150, 200))
 
     def test_celebration_renders_at_supported_window_sizes(self):
         self.addCleanup(pygame.display.set_mode, self.window.get_size())
