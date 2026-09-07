@@ -16,6 +16,7 @@ from src.diagnostic_skills import SkillEngine
 from src.patient_performance import COUGH_CLIP, PROJECT_ROOT, PerformanceProfile, read_pcm_clip
 from src.realtime_conversation import PatientAnimator, Test, _perform_local_skill, _resolve_skill_call, _test_tools
 from src.skill_activity import INSTRUMENTS, InstrumentActivity, ThermometerActivity
+from src.skill_confirmation import SkillConfirmation
 from tests.audio_fakes import ControlledSink, until
 
 
@@ -154,6 +155,35 @@ class SkillRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.animator._text_focused)
         self.assertEqual(self.animator._text_input, "My unsent draft")
         self.assertFalse(self.animator.skills_modal)
+
+    async def test_urinalysis_after_temperature_opens_confirmation_after_voice_release(self):
+        task = await self.start_local()
+        self.decide(True)
+        await until(lambda: self.animator.evidence_open)
+        self.animator.close_test_result()
+        await task
+        self.animator.handle_event(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_LSHIFT), self.stop)
+        self.assertTrue(self.animator.push_to_talk)
+        await self.runtime.interrupt(new_turn=True)
+        self.runtime.user_talking = False
+        self.animator.add_transcript("You", "Perform urinalysis.")
+        self.runtime.queue_user(None)
+        await asyncio.sleep(.02)
+        self.assertEqual(self.sent("response.create"), [])
+        self.assertIsNone(self.animator._skill_confirmation)
+        self.animator.handle_event(pygame.event.Event(pygame.KEYUP, key=pygame.K_LSHIFT), self.stop)
+        await until(lambda: len(self.sent("response.create")) == 1)
+        self.runtime.handle({"type": "response.created", "response": {"id": "urine"}})
+        self.done([self.call("urine-call", "propose_urinalysis")], response_id="urine")
+        await until(lambda: isinstance(self.animator._skill_confirmation, SkillConfirmation))
+        self.assertEqual(len(self.animator.skill_engine.actions), 1)
+        self.decide(True)
+        await until(lambda: self.animator.evidence_open)
+        self.assertEqual(self.animator.skill_engine.actions[-1]["skill_id"], "urinalysis")
+        self.assertEqual(self.animator.skill_engine.actions[-1]["status"], "completed")
+        self.animator.close_test_result()
+        await until(lambda: len(self.outputs()) == 1)
+        self.assertEqual(self.outputs()[0][1]["status"], "completed")
 
     async def test_repeated_local_measurements_cannot_farm_points(self):
         scores = []

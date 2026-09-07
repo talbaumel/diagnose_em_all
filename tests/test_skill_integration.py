@@ -165,6 +165,24 @@ class SkillIntegrationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(await pending, confirm)
         self.assertEqual(self.animator.skill_engine.score, 0)
 
+    async def test_confirmation_gets_catalog_art_by_canonical_skill_id(self):
+        proposal = self.animator.skill_engine.prepare(
+            "viral_metagenomic_sequencing", {"specimen": "nasal_swab", "workflow": "RNA"}, (),
+        )
+        pending = asyncio.create_task(self.animator.confirm_skill(proposal))
+        try:
+            await asyncio.sleep(0)
+            dialog = self.animator._skill_confirmation
+            self.assertIsInstance(dialog, SkillConfirmation)
+            self.assertEqual(dialog.skill_id, "viral_metagenomic_sequencing")
+            self.assertEqual(dialog.icon.name, "viral-nanopore-sequencing-illustration.png")
+            self.animator.draw()
+            self.animator.handle_event(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_ESCAPE), self.stop)
+            self.assertFalse(await pending)
+        finally:
+            pending.cancel()
+            await asyncio.gather(pending, return_exceptions=True)
+
     async def test_interrupted_confirmation_never_executes(self):
         pending = asyncio.create_task(_resolve_skill_call(self.call(), _test_tools([])[1], self.animator))
         await asyncio.sleep(0)
@@ -227,6 +245,42 @@ class SkillIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.animator.draw()
         self.assertIsNotNone(self.animator._test_result_image)
         self.assertIn("descriptive report", self.animator._test_result.results)
+
+    async def test_completed_result_details_keep_evidence_and_do_not_execute_again(self):
+        async def inspect_result():
+            panel = self.animator._skill_result_panel
+            self.assertIsNotNone(panel)
+            self.assertEqual(panel.reading, "38.0 \N{DEGREE SIGN}C")
+            self.assertIsNotNone(panel.evidence)
+            self.assertIsNotNone(self.animator._test_result_image)
+            self.animator.draw()
+            actions = list(self.animator.skill_engine.actions)
+            score = self.animator.skill_engine.score
+            self.animator.handle_event(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_d), self.stop)
+            self.assertTrue(panel.details_open)
+            self.assertTrue(self.animator.evidence_open)
+            self.animator.draw()
+            self.animator.handle_event(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_PAGEDOWN), self.stop)
+            self.assertGreater(self.animator._evidence_scroll, 0)
+            self.animator._window = pygame.display.set_mode((960, 960))
+            click = tuple(value * 2 for value in panel.DETAILS_RECT.center)
+            self.animator.handle_event(pygame.event.Event(pygame.MOUSEBUTTONUP, button=1, pos=click), self.stop)
+            self.assertFalse(panel.details_open)
+            self.assertEqual(self.animator._evidence_scroll, 0)
+            self.assertEqual(self.animator.skill_engine.actions, actions)
+            self.assertEqual(self.animator.skill_engine.score, score)
+            self.animator.handle_event(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_ESCAPE), self.stop)
+            self.assertIsNone(self.animator._skill_result_panel)
+            self.assertTrue(self.animator._evidence_closed.is_set())
+
+        with patch.object(self.animator, "confirm_skill", new=AsyncMock(return_value=True)), patch.object(
+            self.animator, "wait_for_evidence_close", new=inspect_result,
+        ):
+            result = await _resolve_skill_call(self.call(), _test_tools([])[1], self.animator)
+        self.assertEqual(result["status"], "completed")
+        self.animator._show_discovered_tests()
+        self.assertIsNone(self.animator._skill_result_panel)
+        self.assertIn(result["rationale"], self.animator._test_result.results)
 
     async def test_used_results_include_findings_and_rationale(self):
         result = await self.resolve()

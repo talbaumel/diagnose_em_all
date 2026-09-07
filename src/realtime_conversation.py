@@ -43,6 +43,7 @@ from src.care_plan_ui import CareOrderForm
 from src.diagnostic_skills import SkillEngine, load_catalog
 from src.skill_browser import ADVANCED_TEST_IDS, AdvancedTestDrawer, EquipmentDrawer, SkillBrowser
 from src.skill_confirmation import SkillConfirmation
+from src.skill_result import SkillResultPanel, SkillResultSummary
 from src.skill_activity import INSTRUMENTS, SUPPORTED_ACTIVITIES, InstrumentActivity, ThermometerActivity
 from src.conversation_runtime import ConversationRuntime, EvidencePresenter
 from src.game_ui import ChoiceMenu, chat_font, is_rtl, draw_spinner, wrap_text
@@ -236,6 +237,7 @@ class Test:
     results: str
     evidence_image: str | None = None
     audio: str | None = None
+    skill_summary: SkillResultSummary | None = None
 
     def __post_init__(self) -> None:
         if not self.description.strip():
@@ -650,6 +652,7 @@ class PatientAnimator:
         self._scene_started_at = time.monotonic()
         self._test_result: Test | None = None
         self._test_result_image: pygame.Surface | None = None
+        self._skill_result_panel: SkillResultPanel | None = None
         self._evidence_closed = asyncio.Event()
         self._evidence_closed.set()
         self._test_close_button = pygame.Rect(400, 48, 30, 30)
@@ -884,6 +887,7 @@ class PatientAnimator:
         self._test_result = test
         image_path = test.image_path
         self._test_result_image = None
+        self._skill_result_panel = None
         if image_path:
             image = pygame.image.load(str(image_path)).convert_alpha()
             max_dimension = max(image.get_size())
@@ -897,6 +901,9 @@ class PatientAnimator:
                     ),
                 )
             self._test_result_image = image
+        if test.skill_summary is not None:
+            skill = next(skill for skill in load_catalog() if skill.id == test.skill_summary.skill_id)
+            self._skill_result_panel = SkillResultPanel(test.skill_summary, skill.icon, self._test_result_image)
         self._push_to_talk.clear()
         self._evidence_closed.clear()
 
@@ -944,7 +951,10 @@ class PatientAnimator:
                     pygame.event.Event(pygame.KEYDOWN, key=pygame.K_RETURN), (-1, -1),
                 )
         else:
-            self._skill_confirmation = SkillConfirmation(proposal["name"], proposal["parameters"], request)
+            skill = next(skill for skill in load_catalog() if skill.id == proposal["skill_id"])
+            self._skill_confirmation = SkillConfirmation(
+                proposal["name"], proposal["parameters"], request, skill_id=skill.id, icon=skill.icon,
+            )
         self._skill_decision = asyncio.get_running_loop().create_future()
         try:
             return await self._skill_decision
@@ -1081,6 +1091,7 @@ class PatientAnimator:
     def close_test_result(self) -> None:
         self._test_result = None
         self._test_result_image = None
+        self._skill_result_panel = None
         self._evidence_closed.set()
         if self._care_form is not None:
             self._care_form.focus(self._care_form.focus_index)
@@ -1145,7 +1156,7 @@ class PatientAnimator:
         if not self._ready:
             return "CONNECTING", UI_GOLD
         if self.push_to_talk:
-            return "LISTENING", UI_CORAL
+            return "RELEASE SHIFT TO SEND", UI_CORAL
         if state == "talking" or (self._celebration.active(time.monotonic()) and self._state == "talking"):
             return "PATIENT SPEAKING", UI_MINT
         if self._sending:
@@ -1532,6 +1543,11 @@ class PatientAnimator:
             2,
         )
 
+        if self._skill_result_panel is not None:
+            self._evidence_max_scroll = self._skill_result_panel.draw(self._screen, self._evidence_scroll)
+            self._evidence_scroll = min(self._evidence_scroll, self._evidence_max_scroll)
+            return
+
         content = pygame.Rect(48, 116, 384, 286)
         pygame.draw.rect(self._screen, (232, 241, 235), content, border_radius=6)
         title_lines = wrap_text(self._test_result.description, self._test_title_font, content.width - 44)
@@ -1824,6 +1840,8 @@ class PatientAnimator:
                 clicked and self._test_close_button.collidepoint(self._screen_position(event.pos))
             ):
                 self.close_test_result()
+            elif self._skill_result_panel is not None and self._skill_result_panel.toggle_details(event, position):
+                self._evidence_scroll = 0
             elif event.type == pygame.MOUSEWHEEL:
                 self._evidence_scroll = max(0, min(self._evidence_max_scroll, self._evidence_scroll - event.y * 36))
             elif key in (pygame.K_DOWN, pygame.K_PAGEDOWN, pygame.K_UP, pygame.K_PAGEUP):
@@ -2055,6 +2073,9 @@ async def _resolve_skill_call(
             evidence = Test(
                 result["name"], explanation, evidence_image=result.get("image_path"),
                 audio=(evidence_audio or {}).get(result["name"].casefold()) if result["status"] == "completed" else None,
+                skill_summary=SkillResultSummary(
+                    skill_id, result["name"], result["result"], result["points"], result["rationale"],
+                ) if result["status"] == "completed" else None,
             )
             if present_result is None:
                 animator.show_test_result(evidence)

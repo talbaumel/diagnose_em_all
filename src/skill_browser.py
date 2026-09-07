@@ -8,6 +8,7 @@ from typing import Any, Protocol
 import pygame
 
 from src.game_ui import wrap_text
+from src.skill_art import load_thumbnail
 from src.skill_activity import INSTRUMENTS, SUPPORTED_ACTIVITIES, draw_instrument
 
 
@@ -193,13 +194,7 @@ class SkillBrowser:
         if path is None:
             return None
         if path not in self._art_cache:
-            try:
-                image = pygame.image.load(str(path))
-                ratio = min(120 / image.get_width(), 120 / image.get_height())
-                size = (max(1, round(image.get_width() * ratio)), max(1, round(image.get_height() * ratio)))
-                self._art_cache[path] = pygame.transform.smoothscale(image, size)
-            except (OSError, pygame.error, ValueError):
-                self._art_cache[path] = None
+            self._art_cache[path] = load_thumbnail(path, (120, 120))
         return self._art_cache[path]
 
     def _text(self, surface: pygame.Surface, text: str, font: pygame.font.Font,

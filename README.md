@@ -134,7 +134,9 @@ reset the full campaign.
   crouching or jumping; stand/land before entering a consultation. These keys
   still type normally during consultations. WASD movement is no longer used.
 - Enter Pediatrics and the Diagnostics Lab through their corridor doors.
-- Hold either Shift key to speak. Click the text field and press Enter to type.
+- Hold either Shift key to speak, then **release Shift** to let the patient
+  respond or propose a test. The game will not open a new confirmation while
+  push-to-talk is held. Click the text field and press Enter to type.
 - In chat, diagnosis, care-plan text fields and Dragon Copilot, use Cmd+V on
   macOS (Ctrl+V elsewhere) to paste. Cmd/Ctrl+A selects the whole field;
   Cmd/Ctrl+C copies and Cmd/Ctrl+X cuts the selection. Pasted line breaks become
@@ -180,7 +182,15 @@ reset the full campaign.
 - Patient speech and your responses appear in the conversation transcript.
 - Scroll the transcript with the mouse wheel or Page Up / Page Down.
 - Request a skill by voice or text. Review the interpreted skill and parameters, then explicitly confirm or cancel.
+- Skill confirmations show an illustrative image, the skill name and its clinical
+  options. **Details / D** reveals the original request and full options; long
+  details scroll. Illustrations are not patient findings. Cancel remains the
+  default keyboard choice, and confirmation is not a substitute for patient consent.
 - Scroll long evidence reports with the wheel, arrow keys, or Page Up / Page Down.
+- Completed skill results show an instrument illustration and the actual result,
+  with a large reading for temperature. **Details / D** opens the full report,
+  any original evidence image, and the scoring explanation. Illustrations never
+  replace patient-specific findings; the full results also remain in Used skills.
 - Click Diagnose or press F2 to open the final diagnosis dialog.
 - Enter a diagnosis and click Submit Diagnosis or press Enter to commit it.
 - Tab / Shift+Tab moves between the diagnosis field, Cancel, and Submit Diagnosis.

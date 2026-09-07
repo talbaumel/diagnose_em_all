@@ -81,6 +81,15 @@ class ConversationUITests(unittest.TestCase):
     def key(self, value):
         self.animator.handle_event(pygame.event.Event(pygame.KEYDOWN, key=value), self.stop)
 
+    def test_recording_prompt_explains_shift_release_and_fits_status_badge(self):
+        self.key(pygame.K_LSHIFT)
+        text, _ = self.animator._status("idle")
+        self.assertEqual(text, "RELEASE SHIFT TO SEND")
+        self.assertLessEqual(self.animator._status_font.size(text)[0], 160)
+        self.animator.draw()
+        self.animator.handle_event(pygame.event.Event(pygame.KEYUP, key=pygame.K_LSHIFT), self.stop)
+        self.assertEqual(self.animator._status("idle")[0], "READY")
+
     def test_room_drawer_opens_before_picking_up_thermometer(self):
         self.animator.skill_engine = SkillEngine("COMMON_COLD_KID", [])
         self.animator._text_input = "Unsent interview question"
