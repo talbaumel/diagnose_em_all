@@ -54,6 +54,10 @@ class ScoringClientTests(unittest.IsolatedAsyncioTestCase):
         transcript = [("You", "When did this begin?"), ("Patient", "Yesterday.")]
         metrics = ConsultationMetrics(started_at=10, finished_at=45)
         metrics.discover_test("Temperature", "38 C")
+        metrics.diagnostic_skills = {"score": 2, "formula": "bounded sum", "actions": [
+            {"name": "Temperature", "result": "38 C", "points": 2, "rationale": "Fever assessment"},
+        ]}
+        metrics.skill_requests = [{"status": "cancelled", "tool": "propose_chest_ct"}]
         metrics.care_plan.add(Prescription("Example medication", "Player-entered directions", "Symptom relief"))
         metrics.care_plan.add(Referral("Specialist clinic", "Further assessment", "Urgent"))
 
@@ -70,6 +74,8 @@ class ScoringClientTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(evidence["care_plan"]["prescriptions"][0]["medication"], "Example medication")
             self.assertEqual(evidence["care_plan"]["referrals"][0]["urgency"], "Urgent")
             self.assertEqual(evidence["discovered_tests"], [{"name": "Temperature", "result": "38 C"}])
+            self.assertEqual(evidence["deterministic_skills"], metrics.diagnostic_skills)
+            self.assertEqual(evidence["skill_request_log"], metrics.skill_requests)
             return httpx.Response(200, json={"choices": [{"finish_reason": "stop", "message": {"content": json.dumps(scorecard_document())}}]})
 
         result = await score_consultation(transcript, "common cold", "child", metrics, 2, {"Authorization": "Bearer test-token"}, transport=httpx.MockTransport(respond))

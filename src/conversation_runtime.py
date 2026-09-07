@@ -18,6 +18,8 @@ from src.cue_catalog import load_catalog
 from src.cue_timing import internal_pauses, insert_cue
 
 LOGGER = logging.getLogger(__name__)
+EvidencePresenter = Callable[[object], Awaitable[dict]]
+SkillHandler = Callable[[dict, Callable[[], bool], EvidencePresenter], Awaitable[dict]]
 
 
 @dataclass
@@ -41,11 +43,19 @@ class PendingSpeech:
 class ConversationRuntime:
     def __init__(self, websocket, animator, stop, tests_by_tool, sink, *,
                  profile: PerformanceProfile | None = None, clock=time.monotonic,
-                 speech_processor: Callable[[bytes], Awaitable[bytes]] | None = None):
+                 speech_processor: Callable[[bytes], Awaitable[bytes]] | None = None,
+                 skill_tools: dict[str, str] | None = None,
+                 skill_handler: SkillHandler | None = None):
         self.websocket = websocket
         self.animator = animator
         self.stop = stop
         self.tests = tests_by_tool
+        self.skill_tools = skill_tools or {}
+        self.skill_handler = skill_handler
+        self.seen_calls: set[str] = set()
+        self.seen_responses: set[str] = set()
+        self.pending_skills: set[str] = set()
+        self.skill_task: asyncio.Task | None = None
         self.profile = profile
         self.inline_cues = profile is not None and profile.cues is not None
         self.speech_processor = speech_processor
@@ -86,7 +96,21 @@ class ConversationRuntime:
     @property
     def blocked(self) -> bool:
         return bool(self.user_talking or self.animator.push_to_talk or self.animator.evidence_open
-                    or self.animator.won or self.animator._menu is not None or self.stop.is_set())
+                    or self.animator.won or self.animator._menu is not None or self.stop.is_set()
+                    or self.pending_skills
+                    or getattr(self.animator, "_diagnosis_open", False) is True
+                    or getattr(self.animator, "skills_modal", False) is True
+                    or getattr(getattr(self.animator, "_pokedex", None), "open", False) is True)
+
+    def _is_skill_call(self, name: str) -> bool:
+        return self.skill_handler is not None and isinstance(name, str) and (
+            name in self.skill_tools or name == "get_skill_context" or name.startswith("propose_")
+        )
+
+    def _release_skills(self, response: Response) -> None:
+        self.pending_skills.discard(response.id)
+        if self.skill_handler is not None:
+            self.animator._skills_busy = bool(self.pending_skills)
 
     async def send(self, event: dict) -> None:
         await self.websocket.send(json.dumps(event))
@@ -129,6 +153,8 @@ class ConversationRuntime:
 
     async def interrupt(self, *, new_turn: bool = False) -> None:
         truncations = self.playback.interrupt()
+        if self.skill_task is not None:
+            self.skill_task.cancel()
         for job in self.pending_speech:
             truncations.append({
                 "type": "conversation.item.truncate", "item_id": job.segment.item_id,
@@ -283,17 +309,28 @@ class ConversationRuntime:
         except asyncio.QueueFull as error:
             raise AudioPlaybackError("Too many queued clinician turns; please retry") from error
 
-    async def request_response(self, generation: int, *, continuation: bool = False) -> None:
-        await self.idle.wait()
-        if generation != self.playback.generation or self.blocked:
-            return
+    async def request_response(self, generation: int, *, continuation: bool = False,
+                               allow_tools: bool = False) -> None:
+        while True:
+            if generation != self.playback.generation or self.animator.won or self.stop.is_set():
+                return
+            await self.idle.wait()
+            if generation != self.playback.generation or self.animator.won or self.stop.is_set():
+                return
+            if not self.blocked:
+                break
+            if not continuation:
+                return
+            # Keep the completed batch's continuation while a local modal is
+            # open. A new turn or shutdown invalidates it instead of replaying it.
+            await asyncio.sleep(0.005)
         self.idle.clear()
         self.requested_generation = generation
         response = {}
         if continuation:
-            # One continuation per tool chain; disabling tools also prevents
-            # recursive cough/test requests without another clinician turn.
-            response["tool_choice"] = "none"
+            # Context lookup may precede a proposal; the final spoken follow-up
+            # cannot recursively order more procedures or performance cues.
+            response["tool_choice"] = "auto" if allow_tools else "none"
         await self.send({"type": "response.create", "response": response})
 
     async def send_user_requests(self) -> None:
@@ -346,8 +383,11 @@ class ConversationRuntime:
         kind = event.get("type")
         if kind == "response.created":
             response_id = event["response"]["id"]
+            if response_id in self.seen_responses:
+                return
             if self.requested_generation is None or self.active_id is not None:
                 raise AudioPlaybackError("Unexpected concurrent patient response")
+            self.seen_responses.add(response_id)
             self.active_id = response_id
             self.responses[response_id] = Response(response_id, self.requested_generation)
             return
@@ -371,9 +411,37 @@ class ConversationRuntime:
                     self.buffered_bytes -= len(part["pcm"])
                 response.parts.clear()
                 response.calls.clear()
-            elif response.generation == self.playback.generation:
-                for key in tuple(response.parts):
-                    self._flush_part(response, key)
+            else:
+                # The terminal output is authoritative, not a partial arguments
+                # event. Legacy cue streams can omit output; skills never may.
+                output = event.get("response", {}).get("output")
+                candidates = (
+                    [call for call in output if call.get("type") == "function_call"]
+                    if output is not None else [
+                        call for call in response.calls.values()
+                        if not self._is_skill_call(call.get("name", ""))
+                    ]
+                )
+                response.calls.clear()
+                for call in candidates:
+                    call_id = call.get("call_id")
+                    if not isinstance(call_id, str) or not isinstance(call.get("name"), str):
+                        continue
+                    if call_id in self.seen_calls:
+                        continue
+                    if self._is_skill_call(call["name"]) and event["response"].get("status") != "completed":
+                        continue
+                    if len(response.calls) >= 8:
+                        raise AudioPlaybackError("Too many patient tool calls")
+                    self.seen_calls.add(call_id)
+                    response.calls[call_id] = call
+                if response.generation == self.playback.generation:
+                    if any(self._is_skill_call(call["name"]) for call in response.calls.values()):
+                        self.pending_skills.add(response.id)
+                        self.animator._skills_busy = True
+                        self.animator._push_to_talk.clear()
+                    for key in tuple(response.parts):
+                        self._flush_part(response, key)
             try:
                 self.boundaries.put_nowait(response)
             except asyncio.QueueFull as error:
@@ -445,6 +513,33 @@ class ConversationRuntime:
             cue.caption, "cue", cue_id=cue_id,
         ))
 
+    async def present_evidence(self, response: Response, call_id: str, test) -> dict:
+        self.animator.show_test_result(test)
+        result = {}
+        close = None
+        try:
+            if test.audio_path is not None:
+                try:
+                    pcm = read_pcm_clip(test.audio_path)
+                except (OSError, ValueError) as error:
+                    raise AudioPlaybackError(f"Test audio unavailable: {error}") from error
+                ticket = self.playback.enqueue(Segment(
+                    response.generation, response.id, call_id, pcm, "[test audio]", "evidence",
+                ))
+                close = asyncio.create_task(self.animator.wait_for_evidence_close())
+                done, _ = await asyncio.wait({ticket, close}, return_when=asyncio.FIRST_COMPLETED)
+                if close in done and not ticket.done():
+                    # Dismissing a report stops its sound, not the clinician's turn.
+                    self.playback.interrupt()
+                    response.generation = self.playback.generation
+                result["audio_status"] = await ticket
+            await self.animator.wait_for_evidence_close()
+            return result
+        finally:
+            if close is not None:
+                close.cancel()
+                await asyncio.gather(close, return_exceptions=True)
+
     async def finish_responses(self) -> None:
         while True:
             response = await self.boundaries.get()
@@ -453,41 +548,46 @@ class ConversationRuntime:
                     await asyncio.gather(*response.tickets)
                 if response.cancelled:
                     continue
-                current = response.generation == self.playback.generation
                 calls = list(response.calls.values())
-                diagnostic = any(call["name"] in self.tests for call in calls)
+                diagnostic = any(
+                    call["name"] in self.tests or self._is_skill_call(call["name"])
+                    and call["name"] != "get_skill_context" for call in calls
+                )
+                context_only = bool(calls) and all(call["name"] == "get_skill_context" for call in calls)
                 for call in calls:
                     name = call["name"]
                     current = response.generation == self.playback.generation
-                    if not current or self.stop.is_set():
-                        await self.tool_result(call["call_id"], {"status": "skipped"})
+                    if not current or self.stop.is_set() or self.animator.won:
+                        result = (
+                            {"status": "cancelled", "result": "Response interrupted before action.", "points": 0}
+                            if self._is_skill_call(name) else {"status": "skipped"}
+                        )
+                        await self.tool_result(call["call_id"], result)
+                    elif self._is_skill_call(name):
+                        self.skill_task = asyncio.create_task(self.skill_handler(
+                            call, lambda: response.generation == self.playback.generation
+                            and not self.stop.is_set() and not self.animator.won,
+                            lambda test: self.present_evidence(response, call["call_id"], test),
+                        ))
+                        try:
+                            result = await self.skill_task
+                            if asyncio.current_task().cancelling():
+                                raise asyncio.CancelledError
+                        except asyncio.CancelledError:
+                            if asyncio.current_task().cancelling():
+                                raise
+                            result = {"status": "cancelled", "result": "Response interrupted before action.", "points": 0}
+                        finally:
+                            self.skill_task = None
+                        await self.tool_result(call["call_id"], result)
                     elif name in self.tests:
                         test = self.tests[name]
                         self.animator.metrics.discover_test(
                             test.description, test.results
                         )
-                        self.animator.show_test_result(test)
                         result = {"test": test.description, "result": test.results}
-                        if test.audio_path is not None:
-                            try:
-                                pcm = read_pcm_clip(test.audio_path)
-                            except (OSError, ValueError) as error:
-                                raise AudioPlaybackError(f"Test audio unavailable: {error}") from error
-                            ticket = self.playback.enqueue(Segment(
-                                response.generation, response.id, call["call_id"], pcm,
-                                "[test audio]", "evidence",
-                            ))
-                            close = asyncio.create_task(self.animator.wait_for_evidence_close())
-                            done, _ = await asyncio.wait({ticket, close}, return_when=asyncio.FIRST_COMPLETED)
-                            if close in done and not ticket.done():
-                                # Closing evidence stops its sound, not the clinician's turn.
-                                self.playback.interrupt()
-                                response.generation = self.playback.generation
-                            result["audio_status"] = await ticket
-                            close.cancel()
-                            await asyncio.gather(close, return_exceptions=True)
+                        result.update(await self.present_evidence(response, call["call_id"], test))
                         await self.tool_result(call["call_id"], result)
-                        await self.animator.wait_for_evidence_close()
                     elif self.inline_cues and any(
                         cue.kind == name and cue.id in self.cue_audio for cue in self.catalog.values()
                     ):
@@ -498,13 +598,16 @@ class ConversationRuntime:
                         await self.tool_result(call["call_id"], {"status": status})
                     else:
                         await self.tool_result(call["call_id"], {"status": "skipped", "reason": "unknown tool"})
-                if response.generation != self.playback.generation or self.blocked:
+                self._release_skills(response)
+                if response.generation != self.playback.generation or self.animator.won or self.stop.is_set():
                     continue
                 if calls:
-                    if self.continuations == 0:
+                    if self.continuations < 2:
+                        allow_tools = context_only and self.continuations == 0
                         self.continuations += 1
-                        await self.request_response(response.generation, continuation=True)
+                        await self.request_response(response.generation, continuation=True, allow_tools=allow_tools)
                 elif self.continuations == 0 and response.tickets:
                     await self.cough(response, spontaneous=True)
             finally:
+                self._release_skills(response)
                 self.responses.pop(response.id, None)

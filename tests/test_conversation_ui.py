@@ -19,6 +19,7 @@ from src.hospital_game import load_patient_scenario
 from src.audio_playback import AudioPlaybackError
 from src.care_plan import Prescription, Referral
 from src.consultation_review import AxisScore, ConsultationScorecard, SCORE_AXES
+from src.diagnostic_skills import load_catalog
 from tools.preview_performance import RecordingSink
 from src.realtime_conversation import CONSULTATION_PLAYER_DIRECTION_ROW, ConversationResult, PatientAnimator, PatientType, Test, _conversation_session, _diagnosis_matches, _run_conversation, _show_consultation_review, strat_conversation
 from src.realtime_conversation import _test_tools
@@ -35,21 +36,22 @@ class AudioEvidenceTests(unittest.TestCase):
         self.assertEqual(scenario.performance_profile.clip_path, COUGH_PATH.with_name("dry_01_short.wav"))
         self.assertIn("call the cough symptom tool", scenario.system_prompts)
         tools, by_name = _test_tools(scenario.tests)
-        self.assertEqual(len(tools), 2)
-        self.assertTrue(all(test.audio is None for test in by_name.values()))
+        self.assertEqual(len(tools), len(load_catalog()))
+        self.assertEqual(set(by_name.values()), {skill.id for skill in load_catalog()})
+        self.assertTrue(all(test.audio is None for test in scenario.tests))
         self.assertNotIn("assets/", json.dumps(tools))
 
     def test_audio_is_optional_and_paths_resolve_from_project_root(self):
         self.assertIsNone(Test("text", "result").audio_path)
-        self.assertEqual(Test("cough", "Listen", str(COUGH_PATH)).audio_path, COUGH_PATH)
-        test = Test("cough", "Listen", "assets/audio/coughvid/dry_01.wav")
+        self.assertEqual(Test("cough", "Listen", audio=str(COUGH_PATH)).audio_path, COUGH_PATH)
+        test = Test("cough", "Listen", audio="assets/audio/coughvid/dry_01.wav")
         self.assertEqual(test.audio_path, COUGH_PATH)
         self.assertIsNone(test.image_path)
 
     def test_invalid_audio_configuration_is_rejected(self):
         for audio in json.loads('["", "  ", "clip.mp3", 42]'):
             with self.subTest(audio=audio), self.assertRaises(ValueError):
-                Test("cough", "Listen", audio)
+                Test("cough", "Listen", audio=audio)
 
 class ConversationUITests(unittest.TestCase):
     @classmethod
@@ -556,7 +558,7 @@ class ConversationUITests(unittest.TestCase):
         self.animator.metrics.discover_test("Temperature", "38 C")
         self.key(pygame.K_F3)
         self.assertTrue(self.animator.evidence_open)
-        self.assertEqual(self.animator._test_result.results, "Temperature")
+        self.assertEqual(self.animator._test_result.results, "Temperature\n38 C")
         self.assertEqual(len(self.animator.metrics.discovered_tests), 1)
 
     def test_review_scroll_and_return(self):
@@ -760,6 +762,37 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
             result = await _run_conversation("patient", "common cold", 0, [], window=self.window)
         self.assertEqual(result, ConversationResult.SOLVED_QUIT)
 
+    async def test_finished_visit_exports_skill_score_before_review_failure_or_quit(self):
+        from src.diagnostic_skills import SkillEngine
+        from src.patient_performance import PerformanceProfile
+
+        received = []
+        profile = PerformanceProfile()
+
+        async def session(prompt, disease, index, tests, animator, stop, *, sign_in=False, performance_profile=None):
+            self.assertIs(performance_profile, profile)
+            animator.skill_engine = SkillEngine("COMMON_COLD_KID", [Test("temperature", "37.6 C")])
+            proposal = animator.skill_engine.prepare("temperature", {}, ())
+            animator.skill_engine.execute(proposal, ())
+            animator.show_win()
+            stop.set()
+            return True
+
+        async def review(animator, prompt, disease, tests):
+            self.assertEqual(received, [animator.skill_engine.score])
+            animator._review_error = "Service unavailable"
+            animator.quit_requested = True
+
+        with patch("src.realtime_conversation._conversation_session", session), patch(
+            "src.realtime_conversation._show_consultation_review", review,
+        ):
+            result = await _run_conversation(
+                "patient", "common cold", 0, [], window=self.window,
+                on_skill_score=received.append, performance_profile=profile,
+            )
+        self.assertEqual(result, ConversationResult.SOLVED_QUIT)
+        self.assertEqual(len(received), 1)
+
     async def test_review_retries_failure_without_losing_completion(self):
         animator = PatientAnimator(0, window=self.window, disease="common cold")
         self.addCleanup(animator.close)
@@ -857,8 +890,8 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
                 if response_count == 1:
                     for name, call_id in (
                         ("win", "untrusted"),
-                        ("perform_test_1_temperature", "test-1"),
-                        ("perform_test_1_temperature", "test-2"),
+                        ("propose_temperature", "test-1"),
+                        ("propose_temperature", "test-2"),
                     ):
                         await incoming.put({
                             "type": "response.function_call_arguments.done",
@@ -870,7 +903,17 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
                     })
                 await incoming.put({
                     "type": "response.done",
-                    "response": {"id": response_id, "status": "completed"},
+                    "response": {
+                        "id": response_id, "status": "completed",
+                        "output": [
+                            {"type": "function_call", "name": name, "call_id": call_id, "arguments": "{}"}
+                            for name, call_id in (
+                                ("win", "untrusted"),
+                                ("propose_temperature", "test-1"),
+                                ("propose_temperature", "test-2"),
+                            )
+                        ] if response_count == 1 else [],
+                    },
                 })
 
         async def events():
@@ -914,17 +957,22 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
             patch.object(sink, "abort", wraps=sink.abort) as abort,
             patch("src.realtime_conversation.RELIEVED_DURATION_SECONDS", 0.01),
             patch.object(PatientAnimator, "wait_for_evidence_close", close_evidence),
+            patch.object(PatientAnimator, "confirm_skill", new=AsyncMock(return_value=True)),
         ):
             task = asyncio.create_task(_conversation_session("patient", "common cold", 0, [Test("Temperature", "38 C")], animator, stop))
             try:
                 await asyncio.wait_for(processed.wait(), 2)
+                async def wait_for_skills():
+                    while animator._skills_busy:
+                        await asyncio.sleep(0)
+                await asyncio.wait_for(wait_for_skills(), 2)
                 configuration = json.loads(websocket.send.call_args_list[0].args[0])["session"]
                 self.assertNotIn("win", [tool["name"] for tool in configuration["tools"]])
-                self.assertEqual(len(configuration["tools"]), 1)
+                self.assertEqual(len(configuration["tools"]), len(load_catalog()) + 1)
                 self.assertFalse(animator.won)
                 self.assertFalse(stop.is_set())
                 self.assertIn(("You", "common cold"), animator._transcript)
-                self.assertEqual(animator.metrics.discovered_tests, {"Temperature": "38 C"})
+                self.assertIn("38.0", next(iter(animator.metrics.discovered_tests.values())))
                 self.assertIsNotNone(animator.metrics.started_at)
                 animator._open_diagnosis()
                 animator._diagnosis_input = "migraine"

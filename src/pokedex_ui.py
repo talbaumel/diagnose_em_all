@@ -9,6 +9,7 @@ from azure.core.exceptions import AzureError
 
 from src.game_ui import draw_spinner, wrap_text
 from src.has_pokedex import HASPokedex, PokedexError
+from src.text_editing import TextEditing
 
 
 class PokedexPanel:
@@ -17,6 +18,7 @@ class PokedexPanel:
         self.open = False
         self.focused = False
         self.draft = ""
+        self.editing = TextEditing()
         self.messages: list[tuple[str, str]] = []
         self.task: asyncio.Task | None = None
         self.scroll = 0
@@ -38,6 +40,7 @@ class PokedexPanel:
         return self.task is not None and not self.task.done()
 
     def focus(self, focused: bool) -> None:
+        self.editing.reset()
         self.focused = focused
         if focused:
             pygame.key.start_text_input()
@@ -84,6 +87,7 @@ class PokedexPanel:
                 self.messages.append(("Dragon Copilot", text))
                 if self.draft.strip() == question:
                     self.draft = ""
+                    self.editing.reset()
                 self.status = "Clinical reference"
             self.scroll = 0
 
@@ -110,12 +114,16 @@ class PokedexPanel:
         elif key == pygame.K_TAB:
             self.focus(True)
         elif self.focused:
-            if event.type == pygame.TEXTINPUT:
-                self.draft += event.text
-            elif key == pygame.K_BACKSPACE:
-                self.draft = self.draft[:-1]
-            elif key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+            if key in (pygame.K_RETURN, pygame.K_KP_ENTER):
                 self.submit(context)
+            else:
+                updated = self.editing.handle_event(event, self.draft)
+                if updated is not None:
+                    self.draft = updated
+                    if self.editing.error:
+                        self.status = "Clipboard unavailable"
+                        self.messages.append(("Input", self.editing.error))
+                        self.scroll = 0
 
     def draw(self, screen: pygame.Surface) -> None:
         paper, ink, teal, coral = (247, 249, 244), (20, 32, 38), (52, 132, 121), (238, 105, 82)
@@ -161,6 +169,8 @@ class PokedexPanel:
         if rectangle.width > input_area.width:
             rectangle.right = input_area.right - 3
         screen.set_clip(input_area)
+        if self.focused and self.editing.selected_all:
+            pygame.draw.rect(screen, (193, 231, 215), rectangle)
         screen.blit(text, rectangle)
         if self.focused and int(time.monotonic() * 2) % 2 == 0:
             cursor = min(rectangle.right + 2, input_area.right - 2) if self.draft else input_area.x

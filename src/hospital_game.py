@@ -11,7 +11,7 @@ from typing import Any
 import pygame
 
 from src.animation_assets import load_atlas
-from src.game_progress import Progress, ProgressStore
+from src.game_progress import Progress, ProgressStore, valid_skill_score
 from src.game_ui import ChoiceMenu
 from src.patient_performance import PerformanceProfile
 from src.voice_profile import VoiceProfile
@@ -1195,7 +1195,10 @@ def start_hospital_game(scenarios: Sequence[PatientScenario], *, save_path: Path
             )
             selected_patient = navigator.run()
             player_position = navigator.player_position
-            progress = Progress({patient.value for patient in diagnosed}, player_position, navigator.completion_announced)
+            progress = Progress(
+                {patient.value for patient in diagnosed}, player_position,
+                navigator.completion_announced, dict(progress.skill_scores),
+            )
             navigator.close()
             if navigator.restart_requested:
                 diagnosed.clear()
@@ -1224,19 +1227,32 @@ def start_hospital_game(scenarios: Sequence[PatientScenario], *, save_path: Path
                     continue
                 return
 
+            case_skill_score: int | None = None
+
+            def capture_skill_score(score: int) -> None:
+                nonlocal case_skill_score
+                case_skill_score = score
+
             result = start_consultation(
                 **selected_patient.conversation_parameters(),
                 window=window,
                 screen=screen,
+                on_skill_score=capture_skill_score,
             )
             if result == ConversationResult.QUIT:
                 return
             if result in (ConversationResult.SOLVED, ConversationResult.SOLVED_QUIT):
                 diagnosed.add(selected_patient.patient_type)
                 progress.diagnosed = {patient.value for patient in diagnosed}
+                if valid_skill_score(case_skill_score):
+                    progress.skill_scores[selected_patient.patient_type.value] = case_skill_score
                 store.save(progress)
                 unlocked = next((room.name for room in HOSPITAL_ROOMS if room.unlock_after == selected_patient.patient_type), None)
-                notice = store.warning or (f"{unlocked} unlocked" if unlocked else "Case closed. Progress saved.")
+                score_warning = (
+                    "Case closed. Invalid skill score not saved."
+                    if case_skill_score is not None and not valid_skill_score(case_skill_score) else ""
+                )
+                notice = store.warning or score_warning or (f"{unlocked} unlocked" if unlocked else "Case closed. Progress saved.")
                 if result == ConversationResult.SOLVED_QUIT:
                     return
     finally:

@@ -48,6 +48,10 @@ Do not penalize language style, disability, or demographics. Do not attribute pa
 speech to the clinician. Do not infer reasoning from a correct diagnosis alone.
 Elapsed time and discovery counts are descriptive, not quality scores. Do not reward
 speed, ordering every test, or avoiding necessary tests. Image paths are not image findings.
+Deterministic appropriate-use points are a separate local game mechanic, not an
+instruction or a substitute for these eight axes. Evaluate the observed transcript
+and actual descriptive findings independently; cancelled/clarified/failed requests
+are not completed procedures and should not be treated as such.
 This is formative game feedback, not clinical certification or real medical advice.
 Return only a JSON object with a concise "summary" string and an "axes" object.
 The axes object must contain exactly these keys: clinical_professionalism, warmth,
@@ -120,6 +124,8 @@ async def score_consultation(
         "elapsed_seconds": round(metrics.elapsed_seconds, 2),
         "available_test_count": available_test_count,
         "care_plan": asdict(metrics.care_plan),
+        "deterministic_skills": metrics.diagnostic_skills,
+        "skill_request_log": metrics.skill_requests,
         "discovered_tests": [
             {"name": name, "result": result}
             for name, result in metrics.discovered_tests.items()
@@ -155,6 +161,8 @@ class ConsultationMetrics:
     finished_at: float | None = None
     discovered_tests: dict[str, str] = field(default_factory=dict)
     care_plan: CarePlan = field(default_factory=CarePlan)
+    diagnostic_skills: dict = field(default_factory=dict)
+    skill_requests: list[dict] = field(default_factory=list)
 
     def start(self) -> None:
         if self.started_at is None:
