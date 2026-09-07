@@ -1698,7 +1698,7 @@ class PatientAnimator:
             self._draw_evidence()
         if self._diagnosis_open and not self.won:
             self._draw_diagnosis()
-        if self.won:
+        if self.won and not self._celebration.active(time.monotonic()):
             self._draw_win()
         self._draw_scene_fade()
         if self._menu is not None and not self.evidence_open and not self.won:

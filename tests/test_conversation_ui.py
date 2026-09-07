@@ -346,6 +346,24 @@ class ConversationUITests(unittest.TestCase):
         self.assertIsNone(self.animator._celebration.started_at)
         self.assertFalse(self.animator._diagnosis_confirmed.is_set())
 
+    def test_case_closed_waits_until_win_dance_and_confetti_finish(self):
+        with patch("src.realtime_conversation.time.monotonic", return_value=1000) as clock:
+            self.animator._scene_started_at = 990
+            self.animator.show_win()
+            with patch.object(self.animator, "_draw_win", wraps=self.animator._draw_win) as draw_win:
+                for elapsed in (0, .6, 1.4, CELEBRATION_SECONDS - .01):
+                    with self.subTest(elapsed=elapsed):
+                        clock.return_value = 1000 + elapsed
+                        self.animator.draw(elapsed)
+                        self.assertTrue(self.animator.won)
+                        self.assertTrue(self.animator._celebration.active(clock.return_value))
+                        draw_win.assert_not_called()
+                clock.return_value = 1000 + CELEBRATION_SECONDS + .01
+                self.animator.draw(CELEBRATION_SECONDS + .01)
+                draw_win.assert_called_once()
+                self.assertFalse(self.animator._celebration.active(clock.return_value))
+                self.assertLess(clock.return_value, self.animator._relieved_until)
+
     def test_you_win_does_not_flash_at_end_of_relief_animation(self):
         with patch("src.realtime_conversation.time.monotonic", return_value=1000) as clock:
             self.animator._scene_started_at = 990
