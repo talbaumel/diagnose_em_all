@@ -1,0 +1,226 @@
+{
+  "schema_version": 1,
+  "instructions": "Human listening and clinical-content review required. Fill each exact-hash cue record and playtest all eleven patients, including mute. Blank/false means pending.",
+  "cues": {
+    "teen_gurgle_01": {
+      "sha256": "42925c24a3915042ed72d57c06c1e133465023645b8012c3bf2bd876d5037760",
+      "reviewer": "",
+      "natural_and_clean": false,
+      "character_fit": false,
+      "clinical_appropriate": false,
+      "notes": ""
+    },
+    "teen_exhale_01": {
+      "sha256": "8545b5661981cd621c1e5ae1db187e8966a387697a48464f28d3b09891dcba73",
+      "reviewer": "",
+      "natural_and_clean": false,
+      "character_fit": false,
+      "clinical_appropriate": false,
+      "notes": ""
+    },
+    "migraine_exhale_01": {
+      "sha256": "695d25fdc675bf714dc453fd4bf8fd1058304d49ac72a1a3d2544b927dfe6b0b",
+      "reviewer": "",
+      "natural_and_clean": false,
+      "character_fit": false,
+      "clinical_appropriate": false,
+      "notes": ""
+    },
+    "allergy_sniffle_01": {
+      "sha256": "319db62c289ec2e4b71fd6c89697dad142a5bd4f9ee8977a5c4632b3085fcd04",
+      "reviewer": "",
+      "natural_and_clean": false,
+      "character_fit": false,
+      "clinical_appropriate": false,
+      "notes": ""
+    },
+    "allergy_sniffle_02": {
+      "sha256": "e786e2d1759c438b382073956c7eb008900ff59e2fbcfd59b16fd5bd2b21d015",
+      "reviewer": "",
+      "natural_and_clean": false,
+      "character_fit": false,
+      "clinical_appropriate": false,
+      "notes": ""
+    },
+    "allergy_sneeze_01": {
+      "sha256": "8acebbb5075acae12fef6516f915ea12e6310cddf27ece06cc6604e735ebed5a",
+      "reviewer": "",
+      "natural_and_clean": false,
+      "character_fit": false,
+      "clinical_appropriate": false,
+      "notes": ""
+    },
+    "allergy_sneeze_02": {
+      "sha256": "9de84cd974202f69139cb35100c0c28e015afa5433e5846a127aad464f245530",
+      "reviewer": "",
+      "natural_and_clean": false,
+      "character_fit": false,
+      "clinical_appropriate": false,
+      "notes": ""
+    },
+    "athlete_effort_01": {
+      "sha256": "2424b0b4cc612d8a91641fdab9f0bffa454cda29ae28560049f82df40be45e7b",
+      "reviewer": "",
+      "natural_and_clean": false,
+      "character_fit": false,
+      "clinical_appropriate": false,
+      "notes": ""
+    },
+    "athlete_effort_02": {
+      "sha256": "75f24bd86c46a52e50d4e6954a2a28bc9907d7b5157ea417a8863b4150966200",
+      "reviewer": "",
+      "natural_and_clean": false,
+      "character_fit": false,
+      "clinical_appropriate": false,
+      "notes": ""
+    },
+    "anxious_exhale_01": {
+      "sha256": "e2904aa2e58863c52ccf5eeca3751dd6258fb3a742f69381445f31b8d431ee45",
+      "reviewer": "",
+      "natural_and_clean": false,
+      "character_fit": false,
+      "clinical_appropriate": false,
+      "notes": ""
+    },
+    "flu_cough_01": {
+      "sha256": "dd8b73f9d1ff7b8eaeacd56093af65aa997dbc9e0518dcc49cb0f10b9aa55fd8",
+      "reviewer": "",
+      "natural_and_clean": false,
+      "character_fit": false,
+      "clinical_appropriate": false,
+      "notes": ""
+    },
+    "flu_cough_02": {
+      "sha256": "18fbae6db7883c6c2df691522931a713fa9ff3f861f43e8f76cb0c4c7a2667ea",
+      "reviewer": "",
+      "natural_and_clean": false,
+      "character_fit": false,
+      "clinical_appropriate": false,
+      "notes": ""
+    },
+    "rash_rustle_01": {
+      "sha256": "3f5f4df32512830e188d2aa69cd4cd07792e0ca0d4785b18e021bd3bb66a136c",
+      "reviewer": "",
+      "natural_and_clean": false,
+      "character_fit": false,
+      "clinical_appropriate": false,
+      "notes": ""
+    },
+    "rash_rustle_02": {
+      "sha256": "bfe4eec9704fd282abf09f5b459b7f832d40d8746014aee6a159ca238bd332c8",
+      "reviewer": "",
+      "natural_and_clean": false,
+      "character_fit": false,
+      "clinical_appropriate": false,
+      "notes": ""
+    },
+    "back_effort_01": {
+      "sha256": "36682865ac63079b679de4526c66512a206346528cd936707d8034bed4e8af56",
+      "reviewer": "",
+      "natural_and_clean": false,
+      "character_fit": false,
+      "clinical_appropriate": false,
+      "notes": ""
+    },
+    "back_effort_02": {
+      "sha256": "488fc965b8c77c6505e00e1223c6f7e88811147f5963b3a7441e8f694da5c1c8",
+      "reviewer": "",
+      "natural_and_clean": false,
+      "character_fit": false,
+      "clinical_appropriate": false,
+      "notes": ""
+    },
+    "worker_yawn_01": {
+      "sha256": "4e05d30c7f6c1b0956e719b07a0a08f4d3e00931e3c66d9130afa62f6ebc6ca4",
+      "reviewer": "",
+      "natural_and_clean": false,
+      "character_fit": false,
+      "clinical_appropriate": false,
+      "notes": ""
+    },
+    "worker_yawn_02": {
+      "sha256": "a06feee1942ed0685d9689fba941d1d719eed178437854774a4b2f4a32c09770",
+      "reviewer": "",
+      "natural_and_clean": false,
+      "character_fit": false,
+      "clinical_appropriate": false,
+      "notes": ""
+    },
+    "neighbor_throat_clear_01": {
+      "sha256": "145a3e4fd1b17d3d46f0e74682e57694ddb51bc7f14aba37f6cfef21200f291c",
+      "reviewer": "",
+      "natural_and_clean": false,
+      "character_fit": false,
+      "clinical_appropriate": false,
+      "notes": ""
+    }
+  },
+  "patients": {
+    "COMMON_COLD_KID": {
+      "reviewer": "",
+      "live_playtest_passed": false,
+      "muted_playtest_passed": false,
+      "notes": ""
+    },
+    "STOMACHACHE_TEEN": {
+      "reviewer": "",
+      "live_playtest_passed": false,
+      "muted_playtest_passed": false,
+      "notes": ""
+    },
+    "MIGRAINE_SUFFERER": {
+      "reviewer": "",
+      "live_playtest_passed": false,
+      "muted_playtest_passed": false,
+      "notes": ""
+    },
+    "ALLERGIES_PATIENT": {
+      "reviewer": "",
+      "live_playtest_passed": false,
+      "muted_playtest_passed": false,
+      "notes": ""
+    },
+    "SPRAINED_ANKLE_ATHLETE": {
+      "reviewer": "",
+      "live_playtest_passed": false,
+      "muted_playtest_passed": false,
+      "notes": ""
+    },
+    "ANXIOUS_ADULT": {
+      "reviewer": "",
+      "live_playtest_passed": false,
+      "muted_playtest_passed": false,
+      "notes": ""
+    },
+    "FEVERISH_PATIENT": {
+      "reviewer": "",
+      "live_playtest_passed": false,
+      "muted_playtest_passed": false,
+      "notes": ""
+    },
+    "RASH_PATIENT": {
+      "reviewer": "",
+      "live_playtest_passed": false,
+      "muted_playtest_passed": false,
+      "notes": ""
+    },
+    "ELDERLY_WITH_BACK_PAIN": {
+      "reviewer": "",
+      "live_playtest_passed": false,
+      "muted_playtest_passed": false,
+      "notes": ""
+    },
+    "SLEEP_DEPRIVED_WORKER": {
+      "reviewer": "",
+      "live_playtest_passed": false,
+      "muted_playtest_passed": false,
+      "notes": ""
+    },
+    "ECCENTRIC_NEIGHBOR": {
+      "reviewer": "",
+      "live_playtest_passed": false,
+      "muted_playtest_passed": false,
+      "notes": ""
+    }
+  }
+}

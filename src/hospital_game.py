@@ -255,6 +255,15 @@ def load_patient_scenario(path: Path) -> PatientScenario:
                 if not isinstance(profile_data["cues"], list):
                     raise ValueError("cues must be a list")
                 profile_data["cues"] = tuple(CueChoice.from_json(item) for item in profile_data["cues"])
+            if "event_cues" in profile_data:
+                if not isinstance(profile_data["event_cues"], dict):
+                    raise ValueError("event_cues must be an object")
+                events = {}
+                for event, choices in profile_data["event_cues"].items():
+                    if not isinstance(choices, list):
+                        raise ValueError("event_cues values must be lists")
+                    events[event] = tuple(CueChoice.from_json(item) for item in choices)
+                profile_data["event_cues"] = events
             profile = PerformanceProfile(**profile_data)
         except (TypeError, ValueError) as error:
             raise ValueError(f"Invalid performance profile: {path}: {error}") from error

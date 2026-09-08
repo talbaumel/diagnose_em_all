@@ -7,15 +7,18 @@ import base64
 import binascii
 import json
 import logging
+import math
+import sys
 import time
+from array import array
 from collections.abc import Awaitable, Callable, Coroutine
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from src.audio_playback import AudioPlaybackError, MAX_AUDIO_BYTES, PlaybackController, Segment
 from src.patient_performance import CoughPolicy, PerformanceProfile, read_pcm_clip
 from src.speech_processor import SpeechProcessor
-from src.cue_catalog import load_catalog
+from src.cue_catalog import LOCAL_CUE_EVENTS, load_catalog
 from src.cue_timing import internal_pauses, insert_cue
 
 LOGGER = logging.getLogger(__name__)
@@ -66,7 +69,7 @@ class ConversationRuntime:
         self.pending_skills: set[str] = set()
         self.skill_task: asyncio.Task | None = None
         self.profile = profile
-        self.inline_cues = profile is not None and profile.cues is not None
+        self.inline_cues = profile is not None and (profile.cues is not None or bool(profile.event_cues))
         self.speech_processor = speech_processor
         self._owned_speech_processor: SpeechProcessor | None = None
         if self.speech_processor is None and profile and profile.voice and profile.voice.enabled:
@@ -74,17 +77,20 @@ class ConversationRuntime:
             self.speech_processor = self._owned_speech_processor
         self.policy = CoughPolicy(profile, clock) if profile else None
         try:
-            self.cough_pcm = read_pcm_clip(profile.clip_path) if profile else b""
-            self.catalog = load_catalog() if self.inline_cues else {}
+            self.cough_pcm = read_pcm_clip(profile.clip_path) if profile and not self.inline_cues else b""
+            self.catalog = load_catalog() if profile and (self.inline_cues or profile.event_cues) else {}
             self.cue_audio = {}
-            if profile and profile.cues is not None:
-                for choice in profile.cues:
+            if profile:
+                choices = list(profile.cues or ())
+                choices.extend(choice for group in profile.event_cues.values() for choice in group)
+                for choice in choices:
                     cue = self.catalog[choice.id]
                     cue.verify()
                     self.cue_audio[choice.id] = read_pcm_clip(cue.path)
         except (OSError, ValueError, EOFError) as error:
             raise AudioPlaybackError(f"Cough audio unavailable: {error}") from error
-        self.playback = PlaybackController(sink, self._started, self._ended, self._cue_marker)
+        self.playback = PlaybackController(sink, self._started, self._ended, self._cue_marker,
+                                           self._prepare_playback, self._can_start_playback)
         self.responses: dict[str, Response] = {}
         self.boundaries: asyncio.Queue[Response] = asyncio.Queue(maxsize=16)
         self.user_requests: asyncio.Queue[tuple[int, str | None]] = asyncio.Queue(maxsize=8)
@@ -103,15 +109,118 @@ class ConversationRuntime:
         self.processing_bytes = 0
         self.processing_task: asyncio.Future | None = None
         self.active_cue_segment: Segment | None = None
+        self.reaction_segment: Segment | None = None
+        self._event_serial = 0
 
     @property
     def blocked(self) -> bool:
+        return self._cue_blocked()
+
+    def _cue_blocked(self, *, allow_skill: bool = False) -> bool:
         return bool(self.user_talking or self.animator.push_to_talk or self.animator.evidence_open
                     or self.animator.won or self.animator._menu is not None or self.stop.is_set()
-                    or self.pending_skills
+                    or (self.pending_skills and not allow_skill)
                     or getattr(self.animator, "_diagnosis_open", False) is True
-                    or getattr(self.animator, "skills_modal", False) is True
+                    or vars(self.animator).get("_care_form") is not None
+                    or (getattr(self.animator, "skills_modal", False) is True and not allow_skill)
                     or getattr(getattr(self.animator, "_pokedex", None), "open", False) is True)
+
+    def _effects_volume(self) -> float:
+        value = getattr(self.animator, "effects_volume", 1.0)
+        if type(value) not in (int, float):
+            return 1.0
+        return float(value) if math.isfinite(value) and 0 <= value <= 1 else 0.0
+
+    def _speech_busy(self) -> bool:
+        return bool(self.pending_speech or self.processing_task is not None or self.processing_bytes
+                    or self.buffered_bytes or not self.speech_queue.empty()
+                    or not self.user_requests.empty()
+                    or self.active_id is not None or self.requested_generation is not None
+                    or not self.idle.is_set())
+
+    def _prepare_playback(self, segment: Segment) -> Segment | None:
+        if segment.kind not in ("cue", "cough") and segment.insertion is None:
+            return segment
+        volume = self._effects_volume()
+        blocked = self._cue_blocked(allow_skill=segment.allow_skill if segment.event else False)
+        if segment.event and (self._speech_busy() or not self.playback.queue.empty()):
+            blocked = True
+        permitted = self.policy is not None and self.policy.available(
+            spontaneous=segment.spontaneous, event=segment.event, blocked=blocked, reserved=True,
+        )
+        if not volume or not permitted:
+            if segment.kind == "speech" and segment.source_pcm is not None:
+                return replace(segment, pcm=segment.source_pcm, insertion=None, cue_id=None,
+                               cue_caption="", spontaneous=False)
+            return None
+        if volume == 1:
+            return segment
+        start, end = (0, len(segment.pcm))
+        if segment.insertion:
+            span = segment.insertion.spans[1]
+            start, end = span.output_start * 2, span.output_end * 2
+        samples = array("h")
+        samples.frombytes(segment.pcm[start:end])
+        if sys.byteorder != "little":
+            samples.byteswap()
+        scaled = array("h", (round(sample * volume) for sample in samples))
+        if sys.byteorder != "little":
+            scaled.byteswap()
+        pcm = segment.pcm[:start] + scaled.tobytes() + segment.pcm[end:]
+        insertion = replace(segment.insertion, pcm=pcm) if segment.insertion else None
+        return replace(segment, pcm=pcm, insertion=insertion)
+
+    def _can_start_playback(self, segment: Segment) -> bool:
+        if segment.kind not in ("cue", "cough"):
+            return True
+        return bool(self._effects_volume()
+                    and not self._cue_blocked(allow_skill=segment.allow_skill if segment.event else False)
+                    and (not segment.event or (
+                        not self._speech_busy() and self.playback.queue.empty()
+                    )))
+
+    def _enqueue_performance(self, segment: Segment) -> asyncio.Future[str]:
+        try:
+            ticket = self.playback.enqueue(segment)
+        except AudioPlaybackError:
+            if self.policy and segment.cue_turn is not None:
+                self.policy.release(segment.cue_turn)
+            raise
+        if self.policy and segment.cue_turn is not None:
+            policy, turn = self.policy, segment.cue_turn
+            ticket.add_done_callback(lambda _: policy.release(turn))
+        return ticket
+
+    async def play_event_cue(self, event: str, *, allow_skill: bool = False) -> bool:
+        """Play a configured local reaction now or skip it; never schedule a stale event."""
+        if not isinstance(event, str) or event not in LOCAL_CUE_EVENTS:
+            raise ValueError("Unknown local cue event")
+        if type(allow_skill) is not bool:
+            raise ValueError("allow_skill must be a boolean")
+        if (not self.profile or not self.policy or event not in self.profile.event_cues
+                or not self._effects_volume() or self._cue_blocked(allow_skill=allow_skill)
+                or self._speech_busy() or self.playback.active is not None
+                or not self.playback.queue.empty()):
+            return False
+        cue_id = self.policy.choose(self.profile.event_cues[event], event=event)
+        if not cue_id or not self.policy.reserve(event=event):
+            return False
+        self._event_serial += 1
+        identifier = f"local-event:{self._event_serial}"
+        cue = self.catalog[cue_id]
+        segment = Segment(
+            self.playback.generation, identifier, identifier, self.cue_audio[cue_id],
+            cue.caption, "cue", cue_id=cue_id, event=event, allow_skill=allow_skill,
+            cue_turn=self.policy.turn,
+        )
+        return await self._enqueue_performance(segment) == "played"
+
+    def _begin_reaction(self, segment: Segment) -> None:
+        if segment.event:
+            callback = getattr(self.animator, "begin_cue_reaction", None)
+            if callable(callback):
+                self.reaction_segment = segment
+                callback(segment.event, len(segment.pcm) / 48000)
 
     def _is_skill_call(self, name: str) -> bool:
         return self.skill_handler is not None and isinstance(name, str) and (
@@ -133,7 +242,8 @@ class ConversationRuntime:
             LOGGER.info("Audible requested/standalone cue %s in %s", segment.cue_id or segment.kind, segment.response_id)
             self.animator._state = "worried"
             if self.policy:
-                self.policy.started(segment.cue_id)
+                self.policy.started(segment.cue_id, spontaneous=segment.spontaneous, event=segment.event)
+            self._begin_reaction(segment)
 
     def _cue_marker(self, segment: Segment, starting: bool) -> None:
         LOGGER.info("Audible cue %s %s in %s", segment.cue_id, "start" if starting else "end", segment.response_id)
@@ -144,7 +254,7 @@ class ConversationRuntime:
             self.animator.add_transcript("Patient", segment.cue_caption,
                                          f"{segment.item_id}:{segment.content_index}:cue")
             if self.policy:
-                self.policy.started(segment.cue_id)
+                self.policy.started(segment.cue_id, spontaneous=True)
         else:
             self.active_cue_segment = None
             self.animator.set_talking(True)
@@ -153,7 +263,12 @@ class ConversationRuntime:
 
     def _ended(self, segment: Segment, status: str) -> None:
         self.animator.set_talking(False)
-        if status == "interrupted":
+        if self.reaction_segment is segment:
+            self.reaction_segment = None
+            callback = getattr(self.animator, "end_cue_reaction", None)
+            if callable(callback):
+                callback()
+        if status == "interrupted" and segment.event is None:
             # A full caption denotes a segment, not word alignment. Don't leave
             # its unspoken remainder displayed as if the patient said it.
             text = "[cue interrupted]" if self.active_cue_segment is segment or segment.kind == "cue" else (
@@ -216,6 +331,7 @@ class ConversationRuntime:
                 job = await self.speech_queue.get()
                 segment = job.segment
                 forwarded = False
+                reserved_turn = None
                 try:
                     if segment.generation != self.playback.generation:
                         continue
@@ -232,7 +348,7 @@ class ConversationRuntime:
                     try:
                         audio = await asyncio.shield(self.processing_task)
                     except asyncio.CancelledError:
-                        if not self.processing_task.done():
+                        if _task_is_cancelling() or not self.processing_task.done():
                             self.processing_task.cancel()
                             await asyncio.gather(self.processing_task, return_exceptions=True)
                             raise
@@ -244,18 +360,20 @@ class ConversationRuntime:
                         raise AudioPlaybackError("NPC speech processing changed duration")
                     insertion = None
                     cue_id = None
+                    source_pcm = audio
                     response = self.responses.get(segment.response_id)
                     if self.inline_cues and response is not None:
                         if response.cancelled:
                             continue
                         if (not response.calls and not self.continuations and not self.blocked
+                                and self._effects_volume()
                                 and self.profile and self.profile.cues and self.policy):
                             # Pure bounded analysis, off the event loop. Old results are generation-checked.
                             self.processing_task = asyncio.create_task(asyncio.to_thread(internal_pauses, audio))
                             try:
                                 pauses = await asyncio.shield(self.processing_task)
                             except asyncio.CancelledError:
-                                if not self.processing_task.done():
+                                if _task_is_cancelling() or not self.processing_task.done():
                                     self.processing_task.cancel()
                                     await asyncio.gather(self.processing_task, return_exceptions=True)
                                     raise
@@ -267,6 +385,7 @@ class ConversationRuntime:
                             if pauses:
                                 cue_id = self.policy.choose(self.profile.cues)
                                 if cue_id and self.policy.reserve(spontaneous=True, blocked=self.blocked):
+                                    reserved_turn = self.policy.turn
                                     pause = max(pauses, key=lambda gap: gap.end-gap.start)
                                     self.processing_task = asyncio.create_task(asyncio.to_thread(
                                         insert_cue, audio, self.cue_audio[cue_id], pause,
@@ -274,7 +393,7 @@ class ConversationRuntime:
                                     try:
                                         insertion = await asyncio.shield(self.processing_task)
                                     except asyncio.CancelledError:
-                                        if not self.processing_task.done():
+                                        if _task_is_cancelling() or not self.processing_task.done():
                                             self.processing_task.cancel()
                                             await asyncio.gather(self.processing_task, return_exceptions=True)
                                             raise
@@ -294,10 +413,12 @@ class ConversationRuntime:
                         self.processing_bytes - len(segment.pcm)
                     ) > MAX_AUDIO_BYTES:
                         raise AudioPlaybackError("Inline cue exceeds patient audio buffer budget")
-                    playback_ticket = self.playback.enqueue(Segment(
+                    playback_ticket = self._enqueue_performance(Segment(
                         segment.generation, segment.response_id, segment.item_id,
                         audio, segment.caption, segment.kind, segment.content_index,
                         insertion, cue_id, self.catalog[cue_id].caption if cue_id else "",
+                        spontaneous=cue_id is not None, source_pcm=source_pcm if cue_id else None,
+                        cue_turn=self.policy.turn if cue_id and self.policy else None,
                     ))
                     def completed(ticket: asyncio.Future[str], result=job.ticket) -> None:
                         if not result.done():
@@ -308,6 +429,8 @@ class ConversationRuntime:
                     playback_ticket.add_done_callback(completed)
                     forwarded = True
                 finally:
+                    if not forwarded and reserved_turn is not None and self.policy:
+                        self.policy.release(reserved_turn)
                     self.processing_task = None
                     if job in self.pending_speech:
                         self.pending_speech.remove(job)
@@ -506,17 +629,17 @@ class ConversationRuntime:
     async def cough(self, response: Response, *, spontaneous: bool = False) -> str:
         if self.inline_cues:
             return "skipped" if spontaneous else await self.requested_cue(response, "cough")
-        if not self.policy or response.generation != self.playback.generation:
+        if not self.policy or not self._effects_volume() or response.generation != self.playback.generation:
             return "skipped"
         if not self.policy.reserve(spontaneous=spontaneous, blocked=self.blocked):
             return "skipped"
-        return await self.playback.enqueue(Segment(
+        return await self._enqueue_performance(Segment(
             response.generation, response.id, f"{response.id}:cough", self.cough_pcm,
-            "[coughs]", "cough",
+            "[coughs]", "cough", spontaneous=spontaneous, cue_turn=self.policy.turn,
         ))
 
     async def requested_cue(self, response: Response, kind: str) -> str:
-        if (not self.profile or self.profile.cues is None or not self.policy
+        if (not self.profile or self.profile.cues is None or not self.policy or not self._effects_volume()
                 or response.generation != self.playback.generation):
             return "skipped"
         cue_id = self.policy.choose(self.profile.cues, kind=kind)
@@ -524,9 +647,9 @@ class ConversationRuntime:
             LOGGER.info("Requested %s skipped: unavailable, blocked, cooldown or already used this turn", kind)
             return "skipped"
         cue = self.catalog[cue_id]
-        return await self.playback.enqueue(Segment(
+        return await self._enqueue_performance(Segment(
             response.generation, response.id, f"{response.id}:cue", self.cue_audio[cue_id],
-            cue.caption, "cue", cue_id=cue_id,
+            cue.caption, "cue", cue_id=cue_id, cue_turn=self.policy.turn,
         ))
 
     async def present_evidence(self, response: Response, call_id: str, test) -> dict:

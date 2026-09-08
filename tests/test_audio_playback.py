@@ -7,6 +7,7 @@ import threading
 import tempfile
 import unittest
 import wave
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
@@ -163,11 +164,12 @@ class DeviceTests(unittest.TestCase):
 
 
 class ConfigurationTests(unittest.TestCase):
-    def test_profile_optional_and_only_cold_child_enabled(self):
+    def test_profiles_cover_roster_and_remain_optional(self):
         scenarios = [load_patient_scenario(path) for path in sorted((ROOT / "data/prompts").glob("*.json"))]
         self.assertIsNotNone(scenarios[0].performance_profile)
-        self.assertTrue(all(s.performance_profile is None for s in scenarios[1:]))
-        self.assertNotIn("performance_profile", scenarios[1].conversation_parameters())
+        self.assertTrue(all(s.performance_profile is not None for s in scenarios[1:]))
+        self.assertNotIn("performance_profile",
+                         replace(scenarios[1], performance_profile=None).conversation_parameters())
         self.assertIs(scenarios[0].conversation_parameters()["performance_profile"], scenarios[0].performance_profile)
         self.assertEqual(len(scenarios[0].tests), 2)
 

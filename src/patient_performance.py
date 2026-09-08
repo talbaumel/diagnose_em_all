@@ -5,11 +5,13 @@ from __future__ import annotations
 import math
 import random
 import wave
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from collections.abc import Mapping
+from types import MappingProxyType
 from pathlib import Path
 
 from src.voice_profile import VoiceProfile
-from src.cue_catalog import CueChoice, load_catalog
+from src.cue_catalog import CueChoice, LOCAL_CUE_EVENTS, load_catalog
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 COUGH_CLIP = "assets/audio/coughvid/dry_01_short.wav"
@@ -44,8 +46,38 @@ class PerformanceProfile:
     cues: tuple[CueChoice, ...] | None = None
     delivery: str = "Speak naturally, using the persona's age, personality and emotional state."
     cue_selection: str = "weighted"
+    max_spontaneous_cues: int | None = None
+    event_cues: Mapping[str, tuple[CueChoice, ...]] = field(default_factory=dict)
+    event_limits: Mapping[str, int] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        if self.max_spontaneous_cues is not None and (
+            type(self.max_spontaneous_cues) is not int or self.max_spontaneous_cues < 0
+        ):
+            raise ValueError("max_spontaneous_cues must be a nonnegative integer or None")
+        if not isinstance(self.event_cues, Mapping) or not isinstance(self.event_limits, Mapping):
+            raise ValueError("event_cues and event_limits must be mappings")
+        if any(event not in LOCAL_CUE_EVENTS for event in (*self.event_cues, *self.event_limits)):
+            raise ValueError("Unknown local cue event")
+        if any(event not in self.event_cues for event in self.event_limits):
+            raise ValueError("event_limits requires a configured event")
+        if any(type(limit) is not int or limit < 0 for limit in self.event_limits.values()):
+            raise ValueError("event_limits must contain nonnegative integers")
+        if self.event_cues:
+            catalog = load_catalog()
+            for choices in self.event_cues.values():
+                if (not isinstance(choices, tuple) or not 0 < len(choices) <= 8
+                        or any(not isinstance(choice, CueChoice) for choice in choices)):
+                    raise ValueError("event_cues requires one to eight validated cue choices")
+                if len({choice.id for choice in choices}) != len(choices):
+                    raise ValueError("Duplicate event cue IDs")
+                if any(choice.id not in catalog or "event" not in catalog[choice.id].contexts
+                       for choice in choices):
+                    raise ValueError("Event cue requires a catalog ID with event context")
+        object.__setattr__(self, "event_cues", MappingProxyType(dict(self.event_cues)))
+        object.__setattr__(self, "event_limits", MappingProxyType({
+            event: self.event_limits.get(event, 1) for event in self.event_cues
+        }))
         if self.cue_selection not in ("weighted", "cycle"):
             raise ValueError("cue_selection must be weighted or cycle")
         if not isinstance(self.delivery, str) or not self.delivery.strip() or len(self.delivery) > 2000:
@@ -60,6 +92,9 @@ class PerformanceProfile:
                 raise ValueError("Duplicate cue IDs")
             if any(cue.id not in catalog for cue in self.cues):
                 raise ValueError("Unknown cue catalog ID")
+            if any(not {"internal_pause", "requested"}.intersection(catalog[cue.id].contexts)
+                   for cue in self.cues):
+                raise ValueError("Regular cues require internal_pause or requested context")
         if self.voice is not None and not isinstance(self.voice, VoiceProfile):
             raise ValueError("voice must be a validated VoiceProfile")
         if not isinstance(self.cough_clip, str) or self.cough_clip not in ALLOWED_CLIPS:
@@ -73,7 +108,7 @@ class PerformanceProfile:
             or self.cooldown_seconds < 5
         ):
             raise ValueError("cooldown_seconds must be finite and at least 5")
-        minimum_turns = 1 if self.cues is not None else 2
+        minimum_turns = 1 if self.cues is not None or self.event_cues else 2
         if type(self.spontaneous_every_turns) is not int or self.spontaneous_every_turns < minimum_turns:
             raise ValueError(f"spontaneous_every_turns must be an integer of at least {minimum_turns}")
 
@@ -83,7 +118,7 @@ class PerformanceProfile:
 
     @property
     def instructions(self) -> str:
-        if self.cues is not None:
+        if self.cues is not None or self.event_cues:
             filter_note = (
                 "The local processor supplies voice texture; use natural comfortable speech, "
                 "not imitated hoarseness, nasal resonance, whispering or breath noise. "
@@ -116,10 +151,10 @@ class PerformanceProfile:
 
     @property
     def cue_tools(self) -> list[dict]:
-        if self.cues is None:
+        if self.cues is None and not self.event_cues:
             return [COUGH_TOOL]
         catalog = load_catalog()
-        kinds = dict.fromkeys(catalog[choice.id].kind for choice in self.cues
+        kinds = dict.fromkeys(catalog[choice.id].kind for choice in self.cues or ()
                               if "requested" in catalog[choice.id].contexts)
         return [{
             "type": "function", "name": kind,
@@ -146,31 +181,55 @@ class CuePolicy:
         self.last_started_turn: int | None = None
         self.last_cue: str | None = None
         self.played_in_cycle: set[str] = set()
+        self.spontaneous_count = 0
+        self.event_counts: dict[str, int] = {}
 
     def new_turn(self) -> None:
         self.turn += 1
 
-    def reserve(self, *, spontaneous: bool = False, blocked: bool = False) -> bool:
-        if blocked or self.turn == 0 or self.used_turn == self.turn:
+    def available(self, *, spontaneous: bool = False, blocked: bool = False,
+                  event: str | None = None, reserved: bool = False) -> bool:
+        if (blocked or (self.turn == 0 and event is None)
+                or self.last_started_turn == self.turn
+                or (not reserved and self.used_turn == self.turn)):
             return False
         if self.clock() - self.last_started < self.profile.cooldown_seconds:
             return False
+        if event is not None:
+            if event not in self.profile.event_cues:
+                return False
+            if self.event_counts.get(event, 0) >= self.profile.event_limits[event]:
+                return False
         if spontaneous:
+            if (self.profile.max_spontaneous_cues is not None
+                    and self.spontaneous_count >= self.profile.max_spontaneous_cues):
+                return False
             if self.profile.cues is None:
                 if (self.turn - 1) % self.profile.spontaneous_every_turns:
                     return False
             elif (self.last_started_turn is not None
                   and self.turn - self.last_started_turn < self.profile.spontaneous_every_turns):
                 return False
+        return True
+
+    def reserve(self, *, spontaneous: bool = False, blocked: bool = False,
+                event: str | None = None) -> bool:
+        if not self.available(spontaneous=spontaneous, blocked=blocked, event=event):
+            return False
         self.used_turn = self.turn
         return True
 
-    def choose(self, choices: tuple[CueChoice, ...], *, kind: str | None = None) -> str | None:
+    def release(self, turn: int) -> None:
+        if self.used_turn == turn and self.last_started_turn != turn:
+            self.used_turn = -1
+
+    def choose(self, choices: tuple[CueChoice, ...], *, kind: str | None = None,
+               event: str | None = None) -> str | None:
         catalog = load_catalog()
-        context = "requested" if kind else "internal_pause"
+        context = "event" if event else "requested" if kind else "internal_pause"
         eligible = [choice for choice in choices if context in catalog[choice.id].contexts
                     and (kind is None or catalog[choice.id].kind == kind)]
-        if kind is None and self.profile.cue_selection == "cycle":
+        if kind is None and event is None and self.profile.cue_selection == "cycle":
             unplayed = [choice for choice in eligible if choice.id not in self.played_in_cycle]
             if unplayed:
                 eligible = unplayed
@@ -183,9 +242,15 @@ class CuePolicy:
             return None
         return random.choices([choice.id for choice in eligible], weights=[choice.weight for choice in eligible])[0]
 
-    def started(self, cue_id: str | None = None) -> None:
+    def started(self, cue_id: str | None = None, *, spontaneous: bool = False,
+                event: str | None = None) -> None:
         self.last_started = self.clock()
         self.last_started_turn = self.turn
+        self.used_turn = self.turn
+        if spontaneous:
+            self.spontaneous_count += 1
+        if event is not None:
+            self.event_counts[event] = self.event_counts.get(event, 0) + 1
         if cue_id is not None:
             self.last_cue = cue_id
             self.played_in_cycle.add(cue_id)

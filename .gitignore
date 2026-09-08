@@ -12,6 +12,9 @@ __pycache__/
 # Generated listening packs stay local; source recordings and prepared cues are versioned.
 assets/audio/cue_candidates/audition/
 assets/audio/cue_candidates/inline_audition*/
+assets/audio/roster_candidates/audition/
+assets/audio/roster_candidates/research/
+assets/audio/roster_candidates/inline_audition*/
 
 .vscode/*
 !.vscode/launch.json

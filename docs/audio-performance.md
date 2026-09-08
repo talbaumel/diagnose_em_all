@@ -1,7 +1,10 @@
 # NPC audio performance
 
-The common-cold kid is the first enabled persona. Voice processing and bodily
-cues are independently configurable; other patients remain unchanged.
+All eleven personas now have explicit audio profiles. The common-cold kid
+retains its original enabled performance. The ten new profiles are packaged
+together behind a full-roster listening-review gate; they can all be exercised
+with the **Audition Full Roster Audio (Unreviewed)** VS Code task.
+Voice processing and bodily cues remain independently configurable.
 This is an illustrative gameplay performance, not a clinically validated
 simulation of congestion or hoarseness.
 
@@ -19,9 +22,12 @@ The optional `performance_profile` accepts:
 | `cooldown_seconds` | Shared bodily-cue cooldown, finite and at least 5; kid uses 20 |
 | `spontaneous_every_turns` | Minimum turn spacing since the last audible cue; kid uses 1 |
 | `cough_clip` | Backward-compatible allowlisted cough asset |
+| `max_spontaneous_cues` | Optional nonnegative per-visit cap; counts audible starts, not reservations; requested actions bypass this cap |
+| `event_cues` | Local event names mapped to arrays of catalog choices; never advertised as model tools |
+| `event_limits` | Nonnegative per-event visit limits; defaults to one for each configured event |
 
-`cues: []` disables bodily cues and their tools without disabling the voice
-filter. `voice.enabled: false` bypasses voice processing without disabling cues.
+`cues: []` disables conversational cues and their tools without disabling
+configured event cues or the voice filter. `voice.enabled: false` bypasses voice processing without disabling cues.
 Omitting the entire profile restores ordinary dialogue. Configuration is loaded
 at scenario startup; it is not hot-reloaded.
 
@@ -35,6 +41,93 @@ In `cycle` mode, every eligible cue is heard before starting another cycle;
 weights influence order. Only audible starts consume cycle entries and start
 cooldown. Explicit requests bypass cycle selection, not cooldown or the turn cap.
 `weighted` mode avoids the last heard cue when alternatives exist.
+
+### Full-roster candidate release
+
+The new [source pack](../assets/audio/roster_candidates/SOURCES.json) contains
+21 hash-pinned FSD50K distributed recordings and 19 prepared candidate cues.
+Official metadata identifies clip-level CC0 rights; the dataset is separately
+attributed under CC BY 4.0. Three clipped originals were rejected and are not
+used by any prepared cue. Some exhale recordings are reused explicitly across
+profiles; distinct character IDs do not claim distinct performers.
+
+| Patient | Cues | Initial schedule |
+| --- | --- | --- |
+| Cold kid | Existing cough, sniffle, sneeze, throat-clear | Unchanged: cycle, 20 seconds |
+| Stomachache teen | Stomach gurgle, quiet exhale | 45 seconds, 4 turns, at most 2 |
+| Migraine | Quiet exhale | 45 seconds, 4 turns, at most 1 |
+| Allergies | Two sniffles, two sneezes | 25 seconds, 2 turns; sniffles can be requested |
+| Ankle athlete | Two effort exhales | Confirmed relevant examination, 30 seconds, at most 2 |
+| Anxiety | Quiet sigh | 45 seconds, 4 turns, at most 1 |
+| Influenza | Two coughs | 25 seconds, 2 turns; cough can be requested |
+| Rash | Two fabric rustles | Visible idle fidget, 45 seconds, at most 2 |
+| Older back-pain patient | Two effort exhales | Gait assessment/posture reaction, 45 seconds, at most 1 per event |
+| Sleep-deprived worker | Two yawns | 35 seconds, 3 turns, at most 3 |
+| Neighbor | Throat-clear | 45 seconds, 4 turns, at most 1 |
+
+Turn spacing is measured from the last audible cue; the first response may
+already be eligible. A cooldown is a minimum, not a guaranteed interval.
+New profiles omit WORLD processing and always specify `cues`, including
+an empty list for event-only patients, to avoid the legacy cough-only path.
+
+Local events are `ankle_examination`, `back_examination`, `rash_fidget`, and
+`back_posture`. Examinations trigger only after successful confirmed execution,
+before opening results, not on cancellation, repeated results, or mere mentions.
+The athlete reacts to ankle/joint examination, range of motion, weight-bearing,
+or gait assessment; the back-pain patient's examination event is gait assessment,
+not a normal neurological examination or an X-ray.
+Idle fidget/posture opportunities are checked every 45 seconds. Events never
+wait behind speech or queued clinician requests: blocked or stale opportunities
+are skipped. Audible event playback starts a small visible lean/fidget and
+caption through the same output controller as speech. New events share cue
+cooldown and turn budgets; they are not separate audio channels.
+
+Press **F9** or click **EFFECTS** in the consultation header to cycle
+100% -> 50% -> 25% -> off. This setting persists separately from campaign
+progress in `audio-settings.json` beside the progress save. Invalid settings
+are reported and preserved rather than overwritten. Volume is sampled when
+an audio segment is prepared for device playback; an already-started segment
+finishes at its prepared level. Muting subsequent effects never changes speech
+volume. A muted queued inline cue restores the original speech, including its
+original pause. Effects are illustrative; authored symptoms remain in dialogue
+and test results when effects are muted.
+
+#### Review and activation
+
+Normal launches leave the ten new profiles off until the hash-bound
+[review form](../assets/audio/roster_review.json) contains real listening,
+character-fit and clinical-content signoff for every new cue, plus live and
+muted playtest signoff for all eleven patients. The catalog's `gameplay_trial`
+status is not human approval. The review must not be filled automatically.
+The original kid remains enabled regardless of this gate.
+
+To audition the entire release before signoff:
+
+```bash
+DIAGNOSE_AUDITION_ROSTER_CUES=1 uv run python -m src.debug_example
+```
+
+The equivalent VS Code task is **Audition Full Roster Audio (Unreviewed)**.
+The consultation displays an explicit unreviewed-candidate notice.
+Restart after changing profiles or review records.
+
+Verify the packaged sources and reproduce a cue-only listening playlist:
+
+```bash
+uv run python -m tools.prepare_roster_cues verify
+uv run python -m tools.prepare_roster_cues rebuild --output .artifacts/roster-audition
+```
+
+Both operations show completed/total items and elapsed time. Rebuilding is
+offline, refuses an existing output directory, bounds each ffmpeg invocation,
+and verifies reproduced WAV hashes against the source manifest. `fetch` restores
+missing originals only from pinned URLs with exact hashes; it does not approve
+or overwrite recordings. The historical preparation/tool hashes are retained:
+the recovered reproduction tool does not pretend to be that original revision.
+
+The generated playlist includes captions and cue offsets in `playlist.json`.
+Use real character speech with the existing inline audition tool for listening
+review; a tone/fake-sink automated test is not a human voice-fit evaluation.
 
 ### Voice settings
 
@@ -96,9 +189,9 @@ never execute WORLD or pause analysis.
 
 ## Cue catalog and licensing
 
-The [runtime catalog](../assets/audio/cue_catalog.json) promotes four assets
-for the user-approved gameplay trial: cough, short sniffle, sneeze and
-throat-clear. The catalog records IDs, hashes, kind, caption, permitted contexts,
+The [runtime catalog](../assets/audio/cue_catalog.json) retains four cold-kid
+trial assets and registers 19 new default-gated roster candidates.
+The catalog records IDs, hashes, kind, caption, permitted contexts,
 prepared playback level, provenance and license. Profiles cannot specify
 arbitrary cue paths. Modified hashes and redirected paths fail explicitly.
 
