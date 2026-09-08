@@ -1,0 +1,37 @@
+Full-roster candidate clip licensing and attribution
+===================================================
+
+The 21 source recordings in originals/ are explicitly CC0 1.0 in the
+official FSD50K dev/eval_clips_info_FSD50K.json metadata:
+https://zenodo.org/records/4060432
+
+CC0 1.0 Universal:
+https://creativecommons.org/publicdomain/zero/1.0/
+https://creativecommons.org/publicdomain/zero/1.0/legalcode
+
+SOURCES.json identifies each contributor, Freesound page, source hash,
+exact pinned mirror URL, creator description, and clip license. It includes
+three rejected clipped recordings which are never selected for playback.
+Originals are untouched FSD50K distributed WAVs, not necessarily the
+creator's original uploads. The 19 prepared excerpts are trimmed, resampled
+to mono 24 kHz PCM16, edge-faded and gain-adjusted. All trim and gain values
+are recorded in SOURCES.json. No voice cloning or pitch conversion is used.
+
+FSD50K dataset attribution (separate CC BY 4.0 dataset license):
+Eduardo Fonseca, Xavier Favory, Jordi Pons, Frederic Font and Xavier Serra,
+Music Technology Group, Universitat Pompeu Fabra.
+"FSD50K: An Open Dataset of Human-Labeled Sound Events", arXiv:2010.00475.
+https://zenodo.org/records/4060432
+See LICENSE-DATASET.txt for dataset terms.
+
+The original preparation plan was lost during interrupted development;
+its historical hash is retained in SOURCES.json, not rewritten. All
+source references and excerpt parameters needed to reproduce the WAVs
+survive in that manifest. tools/prepare_roster_cues.py verifies and
+reproduces these files without claiming to be the original tool revision.
+
+These recordings remain candidates pending human listening, clinical
+content, privacy/publicity, and character-fit review. CC0 does not verify
+performer age, gender, illness, clinical accuracy or consent for voice
+cloning. No creator endorsement is implied. The full-roster release gate
+remains closed until the separate hash-bound review is completed.

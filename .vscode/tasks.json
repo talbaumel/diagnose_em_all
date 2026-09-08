@@ -2,6 +2,17 @@
 	"version": "2.0.0",
 	"tasks": [
 		{
+			"label": "Audition Full Roster Audio (Unreviewed)",
+			"type": "shell",
+			"command": "${workspaceFolder}/.venv/bin/python",
+			"args": ["-m", "src.debug_example"],
+			"options": {
+				"env": {"DIAGNOSE_AUDITION_ROSTER_CUES": "1"}
+			},
+			"isBackground": true,
+			"problemMatcher": []
+		},
+		{
 			"label": "Start Diagnose 'Em All",
 			"type": "shell",
 			"command": "${workspaceFolder}/.venv/bin/python",

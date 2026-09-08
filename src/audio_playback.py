@@ -31,6 +31,11 @@ class Segment:
     insertion: CueInsertion | None = None
     cue_id: str | None = None
     cue_caption: str = ""
+    spontaneous: bool = False
+    event: str | None = None
+    allow_skill: bool = False
+    source_pcm: bytes | None = None
+    cue_turn: int | None = None
 
     def source_ms(self, heard_ms: int) -> int:
         if self.insertion is None:
@@ -125,7 +130,9 @@ class DeviceSink:
 
 class PlaybackController:
     def __init__(self, sink: AudioSink, on_start: Callable[[Segment], None], on_end: Callable[[Segment, str], None],
-                 on_cue: Callable[[Segment, bool], None] | None = None) -> None:
+                 on_cue: Callable[[Segment, bool], None] | None = None,
+                 prepare: Callable[[Segment], Segment | None] | None = None,
+                 can_start: Callable[[Segment], bool] | None = None) -> None:
         self.sink = sink
         self.on_start = on_start
         self.on_end = on_end
@@ -137,6 +144,8 @@ class PlaybackController:
         self.on_cue = on_cue
         self.cue_started = False
         self.cue_ended = False
+        self.prepare = prepare
+        self.can_start = can_start
 
     def _cue_progress(self, segment: Segment, heard_ms: int) -> None:
         if segment.insertion is None or self.on_cue is None:
@@ -204,12 +213,33 @@ class PlaybackController:
         try:
             while True:
                 segment, result = await self.queue.get()
+                original_bytes = len(segment.pcm)
+                prepared = self.prepare(segment) if self.prepare and not result.done() else segment
+                if result.done() or segment.generation != self.generation or prepared is None:
+                    self.queued_bytes -= original_bytes
+                    if not result.done():
+                        result.set_result("skipped")
+                    continue
+                segment = prepared
                 self.active = (segment, result)
                 self.started = False
                 self.cue_started = self.cue_ended = False
                 self.sink.begin(segment.pcm)
                 while segment.generation == self.generation:
+                    if result.cancelled():
+                        self.sink.abort()
+                        if self.started:
+                            self.on_end(segment, "interrupted")
+                        self.active = None
+                        self.queued_bytes -= original_bytes
+                        break
                     started, drained, heard_ms = self.sink.state()
+                    if not started and not self.started and self.can_start and not self.can_start(segment):
+                        self.sink.abort()
+                        result.set_result("skipped")
+                        self.active = None
+                        self.queued_bytes -= original_bytes
+                        break
                     if started and not self.started:
                         self.started = True
                         self.on_start(segment)
@@ -219,7 +249,7 @@ class PlaybackController:
                         self.on_end(segment, "played")
                         result.set_result("played")
                         self.active = None
-                        self.queued_bytes -= len(segment.pcm)
+                        self.queued_bytes -= original_bytes
                         break
                     await asyncio.sleep(0.005)
         finally:

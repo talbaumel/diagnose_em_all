@@ -126,6 +126,28 @@ VS Code includes **Start Diagnose 'Em All** and **Test Common Cold Kid** tasks.
 Different rosters have independent progress; testing the kid alone does not
 reset the full campaign.
 
+### Full-roster audio audition
+
+All eleven patients have character-specific audio profiles. The kid's existing
+performance remains enabled. The ten new profiles are packaged together as
+unreviewed candidates, default-off until the complete roster passes listening
+and live-playtest review. To try them, run the VS Code task **Audition Full
+Roster Audio (Unreviewed)** or:
+
+```bash
+DIAGNOSE_AUDITION_ROSTER_CUES=1 uv run python -m src.debug_example
+```
+
+**F9 / EFFECTS** cycles character-effects volume through 100%, 50%, 25% and
+off, without changing speech volume. The setting persists across visits.
+Changes apply to subsequently prepared playback segments.
+Ankle/back reactions follow actual examinations or visible posture changes;
+the rash patient uses a subtle fidget rustle, not invented respiratory symptoms.
+See [audio performance](docs/audio-performance.md) for all cue schedules,
+source attribution, reproducible auditions with progress counters, and the
+[hash-bound review form](assets/audio/roster_review.json). Automated tests
+verify playback, not clinical accuracy or human-perceived character fit.
+
 ## Controls and game loop
 
 - Move with arrow keys; press Enter near a highlighted patient.
