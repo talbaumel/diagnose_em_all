@@ -126,6 +126,52 @@ VS Code includes **Start Diagnose 'Em All** and **Test Common Cold Kid** tasks.
 Different rosters have independent progress; testing the kid alone does not
 reset the full campaign.
 
+## Record a scripted demo
+
+The recording tool walks Dr. Ash into Pediatrics, interviews the common-cold
+kid, asks Dragon Simulator Assist for recommended checks, takes the child's
+temperature, examines the throat, states the diagnosis, and scrolls through
+the live scorecard. Doctor questions are visibly typed; patient speech and
+symptom sounds are recorded. Patient answers, helper recommendations, tool
+interpretation, the automatic win, and grading come from the normal live game
+services, not canned responses or a forced success.
+
+Install the optional bundled encoder (or provide `ffmpeg` on PATH):
+
+```bash
+uv pip install --python .venv/bin/python -r requirements-demo.txt
+```
+
+Record a take using the game's existing sign-in and service configuration:
+
+```bash
+uv run --no-sync python -m tools.record_demo --live
+```
+
+Each run creates a new timestamped directory under `.artifacts/demos/` containing
+`common-cold-demo.mp4` (960 x 960, 30 fps, H.264/AAC), the unmerged video/audio,
+milestone screenshots, an encoder log, and `run.json` with the full observed
+transcript, helper response, actual findings, scorecard, and timestamps.
+Use `--output-dir PATH` to choose a **new** directory, or `--size 720 --fps 30`
+to change the capture dimensions and frame rate. Existing directories are
+never overwritten. No game progress is loaded or saved.
+
+This captures the game's rendered display surface and time-aligned playback
+PCM directly, not the macOS desktop. No Screen Recording permission, microphone,
+or loopback audio driver is needed; the recorder does not play sound through
+the speakers. `--headless` hides the OS window while rendering the same game
+frames. A capture-only check records the hospital walk without network calls:
+
+```bash
+uv run --no-sync python -m tools.record_demo --check --headless
+```
+
+Live timing and responses vary. Service errors, unexpected test proposals, or
+missing win/grading terminate the run with a nonzero exit code; any captured
+footage is retained and `run.json` marks it incomplete. The full live recording
+retains service wait times and should be reviewed before sharing. The capture
+check is explicitly marked `capture_check_only` and is not a completed demo.
+
 ## Controls and game loop
 
 - Move with arrow keys; press Enter near a highlighted patient.
