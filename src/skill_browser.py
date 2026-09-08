@@ -8,8 +8,8 @@ from typing import Any, Protocol
 import pygame
 
 from src.game_ui import wrap_text
-from src.skill_art import load_thumbnail
-from src.skill_activity import INSTRUMENTS, SUPPORTED_ACTIVITIES, draw_instrument
+from src.skill_art import load_instrument_art, load_thumbnail
+from src.skill_activity import INSTRUMENTS, SUPPORTED_ACTIVITIES
 
 
 ADVANCED_TEST_IDS = frozenset("""
@@ -254,7 +254,8 @@ class SkillBrowser:
         pygame.draw.rect(surface, self._PALE, self.ART_RECT, border_radius=5)
         art = None if interactive else self._thumbnail(skill.icon)
         if interactive:
-            draw_instrument(surface, skill.id, (self.ART_RECT.right - 12, self.ART_RECT.centery))
+            instrument_art, _ = load_instrument_art(skill.id)
+            surface.blit(instrument_art, instrument_art.get_rect(center=self.ART_RECT.center))
         elif art is not None:
             surface.blit(art, art.get_rect(center=self.ART_RECT.center))
         else:
@@ -332,7 +333,8 @@ class EquipmentDrawer(SkillBrowser):
             art_rect = pygame.Rect(rect.x + 8, rect.y + 8, 112, 50)
             pygame.draw.rect(surface, self._PALE, art_rect)
             if skill.id in INSTRUMENTS:
-                draw_instrument(surface, skill.id, (art_rect.right - 10, art_rect.centery), .9)
+                instrument_art, _ = load_instrument_art(skill.id)
+                surface.blit(instrument_art, instrument_art.get_rect(center=art_rect.center))
             else:
                 art = self._thumbnail(skill.icon)
                 if art is not None:

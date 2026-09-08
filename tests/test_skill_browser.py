@@ -14,6 +14,7 @@ import pygame
 from src.skill_browser import ADVANCED_TEST_IDS, AdvancedTestDrawer, EquipmentDrawer, SkillBrowser
 from src.diagnostic_skills import load_catalog
 from src.skill_activity import SUPPORTED_ACTIVITIES
+from src.skill_art import load_instrument_art
 
 
 def skill(index=0, **changes):
@@ -76,6 +77,21 @@ class SkillBrowserTests(unittest.TestCase):
         self.assertEqual(self.key(pygame.K_F7), ("close", ""))
         self.assertEqual(self.click(self.browser.BACK_RECT.center), ("close", ""))
         self.browser.draw(self.surface)
+
+    def test_drawer_centers_complete_native_sprites_in_each_row(self):
+        self.browser = EquipmentDrawer(item for item in load_catalog() if item.id in SUPPORTED_ACTIVITIES)
+        self.browser.draw(self.surface)
+        self.assertEqual(len(self.browser.catalog), 4)
+        for row, item in enumerate(self.browser.catalog):
+            with self.subTest(skill_id=item.id):
+                slot = pygame.Rect(self.browser.LIST_RECT.x + 8,
+                                   self.browser.LIST_RECT.y + row * self.browser.ROW_HEIGHT + 8, 112, 50)
+                art, _ = load_instrument_art(item.id)
+                expected = pygame.Surface(slot.size)
+                expected.fill(self.browser._PALE)
+                expected.blit(art, art.get_rect(center=expected.get_rect().center))
+                self.assertEqual(pygame.image.tobytes(self.surface.subsurface(slot), "RGB"),
+                                 pygame.image.tobytes(expected, "RGB"))
 
     def test_drawer_pages_and_scrolls_many_instruments(self):
         self.browser = EquipmentDrawer(skill(i) for i in range(31))

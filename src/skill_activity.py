@@ -8,6 +8,8 @@ from dataclasses import dataclass
 
 import pygame
 
+from src.skill_art import load_instrument_art
+
 
 @dataclass(frozen=True)
 class Instrument:
@@ -70,32 +72,7 @@ def draw_thermometer(
     surface: pygame.Surface, tip: tuple[float, float], scale: float = 1.0,
 ) -> None:
     """Draw leftward from the silver contact tip, with an unfilled display."""
-    if not math.isfinite(scale) or scale <= 0:
-        raise ValueError("Thermometer scale must be finite and positive")
-    x, y = (round(value) for value in tip)
-
-    def block(color: tuple[int, int, int], rect: tuple[int, int, int, int]) -> None:
-        left, top, width, height = rect
-        pygame.draw.rect(surface, color, (
-            x + round(left * scale), y + round(top * scale),
-            max(1, round(width * scale)), max(1, round(height * scale)),
-        ))
-
-    block(_INK, (-100, -11, 74, 22))
-    block(_BLUE, (-98, -9, 70, 18))
-    block(_IVORY, (-91, -7, 56, 14))
-    block(_INK, (-82, -5, 29, 10))
-    block(_MINT, (-80, -3, 25, 6))
-    block(_TEAL, (-46, -3, 6, 6))
-    block(_INK, (-28, -4, 27, 8))
-    block(_IVORY, (-28, -2, 17, 4))
-    block(_SILVER, (-11, -2, 12, 4))
-    block(_WHITE, (-10, -2, 10, 1))
-    # Keep the contact pixel at the cursor even at fractional drawing scales.
-    pygame.draw.rect(surface, _SILVER, (
-        x, y - max(1, round(2 * scale)),
-        max(1, round(scale)), max(2, round(4 * scale)),
-    ))
+    draw_instrument(surface, "temperature", tip, scale)
 
 
 def draw_instrument(
@@ -106,35 +83,14 @@ def draw_instrument(
         raise ValueError(f"Unknown instrument: {skill_id!r}")
     if not math.isfinite(scale) or scale <= 0:
         raise ValueError("Instrument scale must be finite and positive")
-    if skill_id == "temperature":
-        draw_thermometer(surface, tip, scale)
-        return
-    art = pygame.Surface((104, 48), pygame.SRCALPHA)
-    if skill_id == "lung_auscultation":
-        pygame.draw.lines(art, _SILVER, False, [(12, 5), (12, 17), (26, 25), (40, 17), (40, 5)], 4)
-        pygame.draw.lines(art, _BLUE, False, [(26, 25), (26, 38), (44, 43), (68, 37), (78, 22), (94, 22)], 5)
-        for x in (12, 40):
-            pygame.draw.circle(art, _INK, (x, 5), 4)
-        pygame.draw.circle(art, _INK, (94, 22), 9)
-        pygame.draw.circle(art, _SILVER, (94, 22), 6)
-        pygame.draw.circle(art, _WHITE, (94, 22), 3)
-    elif skill_id == "ear_examination":
-        pygame.draw.polygon(art, _INK, [(60, 18), (76, 18), (72, 46), (58, 46)])
-        pygame.draw.polygon(art, _BLUE, [(63, 22), (72, 22), (69, 43), (61, 43)])
-        pygame.draw.ellipse(art, _INK, (52, 2, 28, 29))
-        pygame.draw.ellipse(art, _SILVER, (56, 5, 20, 22))
-        pygame.draw.ellipse(art, _BLUE, (60, 9, 12, 14))
-        pygame.draw.polygon(art, _INK, [(76, 12), (96, 20), (96, 24), (76, 27)])
-        pygame.draw.rect(art, _WHITE, (93, 20, 5, 4))
-    else:
-        pygame.draw.rect(art, _INK, (47, 6, 54, 33), border_radius=7)
-        pygame.draw.rect(art, _BLUE, (50, 9, 48, 27), border_radius=5)
-        pygame.draw.rect(art, _IVORY, (55, 13, 28, 15), border_radius=2)
-        pygame.draw.rect(art, _MINT, (58, 16, 22, 9))
-        pygame.draw.rect(art, _INK, (87, 18, 14, 10), border_radius=3)
-        pygame.draw.line(art, _SILVER, (52, 32), (84, 32), 2)
-    image = pygame.transform.scale(art, (max(1, round(104 * scale)), max(1, round(48 * scale))))
-    surface.blit(image, (round(tip[0] - 94 * scale), round(tip[1] - 22 * scale)))
+    art, contact = load_instrument_art(skill_id)
+    size = (max(1, round(art.get_width() * scale)), max(1, round(art.get_height() * scale)))
+    image = pygame.transform.scale(art, size)
+    anchor = (
+        min(size[0] - 1, max(0, round((contact[0] + .5) * size[0] / art.get_width() - .5))),
+        min(size[1] - 1, max(0, round((contact[1] + .5) * size[1] / art.get_height() - .5))),
+    )
+    surface.blit(image, (round(tip[0]) - anchor[0], round(tip[1]) - anchor[1]))
 
 
 class InstrumentActivity:
@@ -172,7 +128,9 @@ class InstrumentActivity:
         self.target_rect.center = target
         self.tray_rect = pygame.Rect(24, 282, 164, 72)
         self.cancel_rect = pygame.Rect(366, 426, 90, 34)
-        self._tray_tip = (self.tray_rect.right - 18, self.tray_rect.centery + 3)
+        art, contact = load_instrument_art(skill_id)
+        tray_art_rect = art.get_rect(center=(self.tray_rect.centerx, self.tray_rect.bottom - 26))
+        self._tray_tip = (tray_art_rect.x + contact[0], tray_art_rect.y + contact[1])
         self.font = pygame.font.SysFont("Avenir Next", 15)
         self.heading = pygame.font.SysFont("Avenir Next", 24, bold=True)
         self.label_font = pygame.font.SysFont("Avenir Next", 14, bold=True)

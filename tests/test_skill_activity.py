@@ -15,6 +15,7 @@ from src.skill_activity import (
     MEASURE_SECONDS, MOUTH_LANDMARKS, SUPPORTED_ACTIVITIES,
     INSTRUMENTS, BODY_LANDMARKS, InstrumentActivity, ThermometerActivity, draw_instrument, draw_thermometer,
 )
+from src.skill_art import load_instrument_art
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -92,6 +93,15 @@ class ThermometerActivityTests(unittest.TestCase):
                     self.assertTrue(self.activity.update(102.5))
                     self.assertEqual(self.activity.tip, target.center)
                     self.activity.draw(pygame.Surface((480, 480)))
+
+    def test_resting_sprites_fit_below_the_tray_label(self):
+        for skill_id in INSTRUMENTS:
+            with self.subTest(skill_id=skill_id):
+                activity = InstrumentActivity(self.frames["COMMON_COLD_KID"], "COMMON_COLD_KID", skill_id)
+                art, contact = load_instrument_art(skill_id)
+                bounds = art.get_rect(topleft=(activity.tip[0] - contact[0], activity.tip[1] - contact[1]))
+                self.assertTrue(activity.tray_rect.inflate(-4, -4).contains(bounds))
+                self.assertGreaterEqual(bounds.top, activity.tray_rect.top + 24)
 
     def test_all_instruments_cancel_and_reset_after_focus_loss(self):
         for skill_id in SUPPORTED_ACTIVITIES:
@@ -287,24 +297,44 @@ class ThermometerActivityTests(unittest.TestCase):
             self.assertGreater(len(set(images[-1])), 20)
         self.assertEqual(len(set(images)), 4)
 
-    def test_thermometer_draws_left_from_silver_tip_with_blank_display(self):
+    def test_thermometer_draws_left_from_silver_tip_using_the_sprite(self):
         for scale in (.5, 1.0, 2.0):
             with self.subTest(scale=scale):
                 layer = pygame.Surface((300, 100), pygame.SRCALPHA)
                 tip = (250.0, 50.0)
                 draw_thermometer(layer, tip, scale)
                 bounds = layer.get_bounding_rect()
-                self.assertEqual(bounds.left, 250 - round(100 * scale))
+                self.assertAlmostEqual(bounds.left, 250 - round(100 * scale), delta=1)
                 self.assertLessEqual(bounds.right, 250 + max(1, round(scale)))
                 self.assertGreater(layer.get_at((250, 50)).a, 0)
-                display = layer.subsurface((
-                    250 - round(80 * scale), 50 - round(3 * scale),
-                    round(25 * scale), round(6 * scale),
-                ))
-                self.assertEqual(len(set(pygame.image.tobytes(display, "RGB"))), 3)
+                expected = pygame.Surface(layer.get_size(), pygame.SRCALPHA)
+                draw_instrument(expected, "temperature", tip, scale)
+                self.assertEqual(pygame.image.tobytes(layer, "RGBA"), pygame.image.tobytes(expected, "RGBA"))
         for scale in (0, -1, float("inf"), float("nan")):
             with self.assertRaises(ValueError):
                 draw_thermometer(layer, (250, 50), scale)
+
+    def test_instrument_sprites_have_transparency_detail_and_valid_contact_pixels(self):
+        for skill_id in INSTRUMENTS:
+            with self.subTest(skill_id=skill_id):
+                art, contact = load_instrument_art(skill_id)
+                self.assertLessEqual(art.get_width(), 101)
+                self.assertLessEqual(art.get_height(), 44)
+                pixels = [art.get_at((column, row)) for column in range(art.get_width())
+                          for row in range(art.get_height())]
+                self.assertEqual({pixel.a for pixel in pixels}, {0, 255})
+                self.assertGreater(len({tuple(pixel) for pixel in pixels if pixel.a}), 30)
+                self.assertGreater(art.get_at(contact).a, 0)
+                self.assertIs(load_instrument_art(skill_id)[0], art)
+                for scale in (.5, .9, 1.0, 2.0):
+                    canvas = pygame.Surface((300, 200), pygame.SRCALPHA)
+                    draw_instrument(canvas, skill_id, (200, 100), scale)
+                    self.assertGreater(canvas.get_at((200, 100)).a, 0, (skill_id, scale))
+                canvas = pygame.Surface((300, 200), pygame.SRCALPHA)
+                draw_instrument(canvas, skill_id, (200, 100))
+                expected = pygame.Surface(canvas.get_size(), pygame.SRCALPHA)
+                expected.blit(art, (200 - contact[0], 100 - contact[1]))
+                self.assertEqual(pygame.image.tobytes(canvas, "RGBA"), pygame.image.tobytes(expected, "RGBA"))
 
 
 if __name__ == "__main__":

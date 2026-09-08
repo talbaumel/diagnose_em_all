@@ -2,10 +2,24 @@
 
 from __future__ import annotations
 
+import json
 import logging
+from functools import lru_cache
 from pathlib import Path
 
 import pygame
+
+
+@lru_cache(maxsize=4)
+def load_instrument_art(skill_id: str) -> tuple[pygame.Surface, tuple[int, int]]:
+    """Return a native pixel-art sprite and its patient-contact pixel."""
+    root = Path(__file__).resolve().parents[1] / "data/sprites/instruments"
+    manifest = json.loads((root / "instruments.json").read_text())
+    if skill_id not in manifest:
+        raise ValueError(f"Unknown instrument: {skill_id!r}")
+    entry = manifest[skill_id]
+    image = pygame.image.load(str(root / entry["file"]))
+    return image, (entry["contact"][0], entry["contact"][1])
 
 
 def load_thumbnail(path: Path | None, size: tuple[int, int]) -> pygame.Surface | None:

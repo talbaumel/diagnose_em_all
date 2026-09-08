@@ -68,8 +68,10 @@ class ConversationRuntime:
         self.profile = profile
         self.inline_cues = profile is not None and profile.cues is not None
         self.speech_processor = speech_processor
+        self._owned_speech_processor: SpeechProcessor | None = None
         if self.speech_processor is None and profile and profile.voice and profile.voice.enabled:
-            self.speech_processor = SpeechProcessor(profile.voice)
+            self._owned_speech_processor = SpeechProcessor(profile.voice, persistent=True)
+            self.speech_processor = self._owned_speech_processor
         self.policy = CoughPolicy(profile, clock) if profile else None
         try:
             self.cough_pcm = read_pcm_clip(profile.clip_path) if profile else b""
@@ -314,6 +316,8 @@ class ConversationRuntime:
                         job.ticket.set_result("skipped")
         finally:
             self._clear_processing()
+            if self._owned_speech_processor is not None:
+                await self._owned_speech_processor.aclose()
 
     def queue_user(self, text: str | None) -> None:
         try:

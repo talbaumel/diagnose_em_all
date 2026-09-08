@@ -1,9 +1,10 @@
-"""One bounded utterance per child process; stdout is metadata line + raw PCM."""
+"""Bounded voice processing with optional length-prefixed worker messages."""
 
 from __future__ import annotations
 
 import argparse
 import json
+import struct
 import sys
 import time
 
@@ -50,11 +51,32 @@ def process_pcm(pcm: bytes, profile: VoiceProfile) -> tuple[bytes, dict]:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--profile", required=True)
+    parser.add_argument("--stream", action="store_true")
     args = parser.parse_args()
     profile = VoiceProfile.from_json(json.loads(args.profile))
-    output, metadata = process_pcm(sys.stdin.buffer.read(MAX_PCM_BYTES + 1), profile)
-    sys.stdout.buffer.write(json.dumps(metadata, allow_nan=False).encode("utf-8") + b"\n" + output)
-    sys.stdout.buffer.flush()
+    while True:
+        if args.stream:
+            header = sys.stdin.buffer.read(4)
+            if not header:
+                return
+            if len(header) != 4:
+                raise ValueError("Truncated voice request header")
+            size = struct.unpack("!I", header)[0]
+            if not size or size % 2 or size > MAX_PCM_BYTES:
+                raise ValueError("Invalid voice request size")
+            pcm = sys.stdin.buffer.read(size)
+            if len(pcm) != size:
+                raise ValueError("Truncated voice request audio")
+        else:
+            pcm = sys.stdin.buffer.read(MAX_PCM_BYTES + 1)
+        output, metadata = process_pcm(pcm, profile)
+        payload = json.dumps(metadata, allow_nan=False).encode("utf-8") + b"\n" + output
+        if args.stream:
+            sys.stdout.buffer.write(struct.pack("!I", len(payload)))
+        sys.stdout.buffer.write(payload)
+        sys.stdout.buffer.flush()
+        if not args.stream:
+            return
 
 
 if __name__ == "__main__":

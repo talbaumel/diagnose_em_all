@@ -1,0 +1,30 @@
+{
+  "temperature": {
+    "file": "temperature.png",
+    "contact": [
+      100,
+      7
+    ]
+  },
+  "oxygen_saturation": {
+    "file": "oxygen_saturation.png",
+    "contact": [
+      45,
+      34
+    ]
+  },
+  "lung_auscultation": {
+    "file": "lung_auscultation.png",
+    "contact": [
+      75,
+      9
+    ]
+  },
+  "ear_examination": {
+    "file": "ear_examination.png",
+    "contact": [
+      26,
+      7
+    ]
+  }
+}

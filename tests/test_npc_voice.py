@@ -4,6 +4,8 @@ import asyncio
 import base64
 import importlib.util
 import json
+import struct
+import sys
 import tempfile
 import time
 import unittest
@@ -239,20 +241,38 @@ class VoiceRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
 
 class VoiceProcessLifecycleTests(unittest.IsolatedAsyncioTestCase):
-    async def test_cancel_terminates_and_reaps_child(self):
+    def processor(self, *, persistent=False):
         with patch("src.speech_processor.importlib.util.find_spec", return_value=object()):
-            processor = SpeechProcessor(VoiceProfile(enabled=True))
-        child = Mock()
-        child.returncode = None
-        entered = asyncio.Event()
-        async def communicate(pcm):
-            entered.set()
-            await asyncio.Event().wait()
+            return SpeechProcessor(VoiceProfile(enabled=True), persistent=persistent)
+
+    def child(self, *payloads, stderr=b"", eof=False):
+        child = Mock(returncode=None)
+        child.stdin.drain = AsyncMock()
+        child.stdout = asyncio.StreamReader()
+        for payload in payloads:
+            child.stdout.feed_data(struct.pack("!I", len(payload)) + payload)
+        if eof:
+            child.stdout.feed_eof()
+        child.stderr = asyncio.StreamReader()
+        child.stderr.feed_data(stderr)
+        child.stderr.feed_eof()
+
         async def wait():
             child.returncode = -15
             return -15
-        child.communicate = AsyncMock(side_effect=communicate)
+
         child.wait = AsyncMock(side_effect=wait)
+        return child
+
+    async def test_cancel_terminates_and_reaps_child(self):
+        processor = self.processor(persistent=True)
+        child = self.child()
+        entered = asyncio.Event()
+
+        async def drain():
+            entered.set()
+
+        child.stdin.drain.side_effect = drain
         with patch("src.speech_processor.asyncio.create_subprocess_exec", AsyncMock(return_value=child)):
             task = asyncio.create_task(processor(b"\0\0" * 24000))
             await entered.wait()
@@ -264,18 +284,91 @@ class VoiceProcessLifecycleTests(unittest.IsolatedAsyncioTestCase):
         child.kill.assert_not_called()
 
     async def test_worker_failure_and_malformed_output_are_explicit(self):
-        with patch("src.speech_processor.importlib.util.find_spec", return_value=object()):
-            processor = SpeechProcessor(VoiceProfile(enabled=True))
-        for code, stdout, stderr in ((1, b"", b"backend failed"),
-                                     (0, b"invalid\n\0\0", b""),
-                                     (0, b'{"status":"processed"}\n', b""),
-                                     (0, b'[]\n\0\0', b"")):
-            child = Mock(returncode=code)
-            child.communicate = AsyncMock(return_value=(stdout, stderr))
-            with self.subTest(code=code, stdout=stdout), patch(
+        processor = self.processor(persistent=True)
+        for stdout, stderr in ((None, b"backend failed"),
+                               (b"invalid\n\0\0", b""),
+                               (b'{"status":"processed"}\n', b""),
+                               (b'[]\n\0\0', b"")):
+            child = self.child(*(() if stdout is None else (stdout,)), stderr=stderr, eof=True)
+            with self.subTest(stdout=stdout), patch(
                 "src.speech_processor.asyncio.create_subprocess_exec", AsyncMock(return_value=child),
             ), self.assertRaises(AudioPlaybackError):
                 await processor(b"\0\0")
+            self.assertIsNone(processor._process)
+            child.wait.assert_awaited()
+
+    async def test_reuses_worker_and_close_is_idempotent(self):
+        processor = self.processor(persistent=True)
+        child = self.child(b'{"status":"processed"}\n\1\0', b'{"status":"processed"}\n\2\0')
+        with patch("src.speech_processor.asyncio.create_subprocess_exec", AsyncMock(return_value=child)) as spawn:
+            self.assertEqual(await processor(b"\0\0"), b"\1\0")
+            self.assertEqual(await processor(b"\0\0"), b"\2\0")
+            spawn.assert_awaited_once()
+            child.terminate.assert_not_called()
+            await processor.aclose()
+            await processor.aclose()
+        child.terminate.assert_called_once()
+        child.wait.assert_awaited_once()
+
+    async def test_interrupted_worker_is_replaced_for_next_reply(self):
+        processor = self.processor(persistent=True)
+        interrupted = self.child()
+        replacement = self.child(b'{"status":"processed"}\n\2\0')
+        with patch("src.speech_processor.asyncio.create_subprocess_exec", AsyncMock(
+            side_effect=[interrupted, replacement],
+        )) as spawn:
+            task = asyncio.create_task(processor(b"\0\0"))
+            await until(lambda: interrupted.stdin.write.called)
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+            self.assertEqual(await processor(b"\0\0"), b"\2\0")
+            self.assertEqual(spawn.await_count, 2)
+            await processor.aclose()
+        interrupted.terminate.assert_called_once()
+        replacement.terminate.assert_called_once()
+
+    async def test_invalid_frame_size_is_rejected_without_reading_body(self):
+        processor = self.processor(persistent=True)
+        child = self.child()
+        child.stdout.feed_data(struct.pack("!I", MAX_AUDIO_BYTES))
+        with patch("src.speech_processor.asyncio.create_subprocess_exec", AsyncMock(return_value=child)):
+            with self.assertRaisesRegex(AudioPlaybackError, "Invalid NPC voice output"):
+                await asyncio.wait_for(processor(b"\0\0"), 1)
+        child.terminate.assert_called_once()
+
+    async def test_timeout_closes_worker_and_preserves_actionable_error(self):
+        processor = self.processor(persistent=True)
+        child = self.child()
+        child.stdout.readexactly = AsyncMock(side_effect=asyncio.TimeoutError)
+        with patch("src.speech_processor.asyncio.create_subprocess_exec", AsyncMock(return_value=child)):
+            with self.assertRaisesRegex(AudioPlaybackError, "processing timed out"):
+                await processor(b"\0\0")
+        child.terminate.assert_called_once()
+        child.wait.assert_awaited()
+        self.assertIsNone(processor._process)
+
+    async def test_shutdown_kills_worker_that_does_not_terminate(self):
+        processor = self.processor(persistent=True)
+        child = self.child(b'{"status":"processed"}\n\1\0')
+        child.wait.side_effect = [asyncio.TimeoutError(), -9]
+        with patch("src.speech_processor.asyncio.create_subprocess_exec", AsyncMock(return_value=child)):
+            await processor(b"\0\0")
+            await processor.aclose()
+        child.terminate.assert_called_once()
+        child.kill.assert_called_once()
+        self.assertEqual(child.wait.await_count, 2)
+
+    async def test_concurrent_requests_keep_audio_paired_and_share_worker(self):
+        processor = self.processor(persistent=True)
+        child = self.child(b'{"status":"processed"}\n\1\0', b'{"status":"processed"}\n\2\0')
+        with patch("src.speech_processor.asyncio.create_subprocess_exec", AsyncMock(return_value=child)) as spawn:
+            result = await asyncio.gather(processor(b"\3\0"), processor(b"\4\0"))
+            self.assertEqual(result, [b"\1\0", b"\2\0"])
+            self.assertEqual([call.args[0] for call in child.stdin.write.call_args_list],
+                             [struct.pack("!I", 2) + b"\3\0", struct.pack("!I", 2) + b"\4\0"])
+            spawn.assert_awaited_once()
+            await processor.aclose()
 
 
 @unittest.skipUnless(HAS_VOICE, "Run uv sync --locked for real voice processing tests")
@@ -288,6 +381,36 @@ class RealVoiceTests(unittest.IsolatedAsyncioTestCase):
                          for n in range(1, 9)], axis=0)
         return pcm16(signal)
 
+    async def test_stream_worker_matches_each_utterance_and_exits_on_eof(self):
+        from src.voice_worker import process_pcm
+        profile = VoiceProfile(enabled=True)
+        child = await asyncio.create_subprocess_exec(
+            sys.executable, "-m", "src.voice_worker", "--stream",
+            "--profile", json.dumps({"enabled": True}), cwd=ROOT,
+            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        assert child.stdin and child.stdout
+        try:
+            for pcm in (self.fixture(), self.fixture(6000), bytes(4800)):
+                expected, metadata = await asyncio.to_thread(process_pcm, pcm, profile)
+                child.stdin.write(struct.pack("!I", len(pcm)) + pcm)
+                await child.stdin.drain()
+                header = await asyncio.wait_for(child.stdout.readexactly(4), 10)
+                size = struct.unpack("!I", header)[0]
+                payload = await asyncio.wait_for(child.stdout.readexactly(size), 10)
+                encoded_metadata, separator, actual = payload.partition(b"\n")
+                self.assertEqual(separator, b"\n")
+                self.assertEqual(json.loads(encoded_metadata)["status"], metadata["status"])
+                self.assertEqual(actual, expected)
+                self.assertIsNone(child.returncode)
+            child.stdin.close()
+            self.assertEqual(await asyncio.wait_for(child.wait(), 5), 0)
+        finally:
+            if child.returncode is None:
+                child.kill()
+                await child.wait()
+
     async def test_subprocess_matches_shared_audition_processor(self):
         from src.voice_worker import process_pcm
         pcm = self.fixture()
@@ -298,6 +421,27 @@ class RealVoiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(actual, expected)
         self.assertEqual(len(actual), len(pcm))
         self.assertNotEqual(actual, pcm)
+
+    async def test_single_request_worker_cli_remains_compatible(self):
+        from src.voice_worker import process_pcm
+        pcm = self.fixture()
+        expected, _ = await asyncio.to_thread(process_pcm, pcm, VoiceProfile(enabled=True))
+        child = await asyncio.create_subprocess_exec(
+            sys.executable, "-m", "src.voice_worker", "--profile", '{"enabled":true}',
+            cwd=ROOT, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(child.communicate(pcm), 10)
+            self.assertEqual(child.returncode, 0, stderr.decode(errors="replace"))
+            header, separator, actual = stdout.partition(b"\n")
+            self.assertEqual(separator, b"\n")
+            self.assertEqual(json.loads(header)["status"], "processed")
+            self.assertEqual(actual, expected)
+        finally:
+            if child.returncode is None:
+                child.kill()
+                await child.wait()
 
     async def test_real_worker_through_runtime_skips_spontaneous_cue_without_pause(self):
         from src.voice_worker import process_pcm
@@ -333,10 +477,16 @@ class RealVoiceTests(unittest.IsolatedAsyncioTestCase):
             sink.done = True
             await until(lambda: "real" not in runtime.responses)
             self.assertEqual(sink.history, [expected])
+            processor = runtime._owned_speech_processor
+            assert processor is not None and processor._process is not None
+            child = processor._process
+            self.assertIsNone(child.returncode)
         finally:
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
+        self.assertIsNone(processor._process)
+        self.assertIsNotNone(child.returncode)
 
     async def test_short_quiet_unvoiced_and_disabled_are_handled(self):
         import numpy as np

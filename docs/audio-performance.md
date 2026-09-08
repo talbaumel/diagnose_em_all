@@ -160,6 +160,13 @@ Additional tools:
 
 Harvest is buffered, not low-latency streaming. On the development Mac, an
 eight-second utterance took roughly two seconds including child startup.
+The call now reuses one voice worker between completed utterances, avoiding
+repeated Python and scientific-library startup without changing the audio
+algorithm. Interrupted processing discards its worker; the next reply starts a
+fresh one, and leaving the call closes it. On a one-second synthetic voiced
+sample, warm processing measured about 82 ms versus 212 ms with a fresh worker.
+These are local processing timings, not end-to-end call latency; full-utterance
+buffering, model generation, and network delays still apply.
 Acoustic quiet gaps are not verified word/phoneme boundaries and may miss
 opportunities or misclassify very quiet speech. Clinical realism, speaker
 identity and subjective naturalness require listening, not merely passing tests.
