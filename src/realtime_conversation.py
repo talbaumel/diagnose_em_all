@@ -18,7 +18,7 @@ import re
 import threading
 import time
 from collections import deque
-from collections.abc import AsyncIterator, Callable, Iterator, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Sequence
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import asdict, dataclass
 from enum import Enum
@@ -48,6 +48,8 @@ from src.skill_activity import INSTRUMENTS, SUPPORTED_ACTIVITIES, InstrumentActi
 from src.conversation_runtime import ConversationRuntime, EvidencePresenter
 from src.game_ui import ChoiceMenu, chat_font, is_rtl, draw_spinner, wrap_text
 from src.patient_performance import PerformanceProfile
+from src.character_effects import CueReaction, EffectsSettings, examination_cue_event
+from src.roster_audio_review import roster_audio_enabled
 from src.patient_celebration import PatientCelebration
 from src.pokedex_ui import PokedexPanel
 from src.text_editing import TextEditing
@@ -753,6 +755,10 @@ class PatientAnimator:
         self._transcript_indexes: dict[str, int] = {}
         self._transcript_lines: list[str] = []
         self._transcript_scroll = 0
+        self._effects_settings = EffectsSettings()
+        self._effects_settings.load()
+        self._effects_button = pygame.Rect(306, 35, 158, 22)
+        self._cue_reaction = CueReaction()
         self._evidence_scroll = 0
         self._evidence_max_scroll = 0
         self._push_to_talk = threading.Event()
@@ -770,6 +776,8 @@ class PatientAnimator:
         self._test_title_font = pygame.font.SysFont("Avenir Next", 16, bold=True)
         self._test_result_font = pygame.font.SysFont("Avenir Next", 18, bold=True)
         self._win_font = pygame.font.SysFont("Avenir Next", 32, bold=True)
+        if self._effects_settings.warning:
+            self.add_transcript("Case", self._effects_settings.warning)
 
     def _screen_position(self, window_position: tuple[int, int]) -> tuple[int, int]:
         window_width, window_height = self._window.get_size()
@@ -799,6 +807,25 @@ class PatientAnimator:
         self._state = "talking" if talking else "idle"
         if talking:
             self._sending = False
+
+    @property
+    def effects_volume(self) -> float:
+        return self._effects_settings.volume
+
+    def cycle_effects_volume(self) -> None:
+        try:
+            self._effects_settings.cycle()
+        except (OSError, ValueError) as error:
+            self.add_transcript("Case", f"Audio settings not saved: {error}")
+            return
+        level = f"{round(self.effects_volume * 100)}%" if self.effects_volume else "off"
+        self.add_transcript("Case", f"Character effects {level}; speech volume unchanged.")
+
+    def begin_cue_reaction(self, event: str, duration_seconds: float) -> None:
+        self._cue_reaction.start(event, duration_seconds, time.monotonic())
+
+    def end_cue_reaction(self) -> None:
+        self._cue_reaction.stop()
 
     def set_microphone_available(self, available: bool) -> None:
         self._microphone_available = available
@@ -1217,6 +1244,10 @@ class PatientAnimator:
 
         elapsed = self._status_font.render(f"TIME {format_duration(self.metrics.elapsed_seconds)}", True, UI_GOLD)
         self._screen.blit(elapsed, elapsed.get_rect(topright=(464, 13)))
+        pygame.draw.rect(self._screen, UI_PANEL, self._effects_button, border_radius=4)
+        level = f"{round(self.effects_volume * 100)}%" if self.effects_volume else "OFF"
+        effects = self._status_font.render(f"F9  EFFECTS {level}", True, UI_WHITE)
+        self._screen.blit(effects, effects.get_rect(center=self._effects_button.center))
         status_text, status_color = self._status(state)
         pygame.draw.rect(self._screen, UI_PANEL, (292, 70, 172, 22), border_radius=5)
         status = self._status_font.render(status_text, True, status_color)
@@ -1243,6 +1274,9 @@ class PatientAnimator:
         motion_time = time.monotonic()
         patient_bob = round(math.sin(motion_time * 2.6) * 2)
         lean, lift = self._celebration.pose(motion_time)
+        cue_lean, cue_lift = self._cue_reaction.pose(motion_time)
+        lean += cue_lean
+        lift += cue_lift
         if lean:
             patient_frame = pygame.transform.rotate(patient_frame, lean)
         player_bob = round(math.sin(motion_time * 2.2 + 1.4))
@@ -1831,6 +1865,9 @@ class PatientAnimator:
         key = event.key if event.type == pygame.KEYDOWN else None
         clicked = event.type == pygame.MOUSEBUTTONUP and event.button == 1
         position = self._screen_position(event.pos) if hasattr(event, "pos") else (-1, -1)
+        if key == pygame.K_F9 or (clicked and self._effects_button.collidepoint(position)):
+            self.cycle_effects_volume()
+            return
         if event.type == pygame.MOUSEMOTION:
             self._drawer_hovered = self._equipment_drawer_hotspot.collidepoint(position)
             self._advanced_drawer_hovered = self._advanced_drawer_hotspot.collidepoint(position)
@@ -1973,6 +2010,7 @@ class PatientAnimator:
         if self._skill_decision is not None and not self._skill_decision.done():
             self._skill_decision.cancel()
         self._celebration.dismiss()
+        self.end_cue_reaction()
         self._pokedex.hide()
         pygame.key.stop_text_input()
         if self._owns_display:
@@ -2006,6 +2044,7 @@ async def _resolve_skill_call(
     present_result: EvidencePresenter | None = None,
     evidence_audio: dict[str, str] | None = None,
     origin: str = "conversation",
+    cue_event: Callable[[str], Awaitable[bool]] | None = None,
 ) -> dict:
     """Validate and execute a win, or obtain local approval for a medical skill."""
     engine = animator.skill_engine
@@ -2103,6 +2142,9 @@ async def _resolve_skill_call(
                     animator.metrics.discovered_tests[result["name"]] = prior + "\n\n" + result["result"]
                 else:
                     animator.metrics.discover_test(result["name"], result["result"])
+                event = examination_cue_event(engine.patient_type, skill_id)
+                if event is not None and cue_event is not None and is_current():
+                    await cue_event(event)
             explanation = f"{result['result']}\n\nAppropriate use: {result.get('points', 0):+d}\n{result.get('rationale', '')}"
             evidence = Test(
                 result["name"], explanation, evidence_image=result.get("image_path"),
@@ -2164,6 +2206,7 @@ async def _perform_local_skill(animator: PatientAnimator, runtime: ConversationR
             runtime.skill_tools, animator,
             lambda: generation == runtime.playback.generation and not runtime.stop.is_set() and not animator.won,
             origin="instrument",
+            cue_event=lambda event: runtime.play_event_cue(event, allow_skill=True),
         )
         if result["status"] != "cancelled" and not runtime.stop.is_set():
             # There is no model function call to answer. Send only observed facts,
@@ -2193,6 +2236,15 @@ async def _conversation_session(
     sign_in: bool = False,
     performance_profile: PerformanceProfile | None = None,
 ) -> bool:
+    if patient_index != 0 and performance_profile is not None:
+        try:
+            enabled, notice = roster_audio_enabled()
+        except (OSError, ValueError, UnicodeError) as error:
+            raise AudioPlaybackError(f"Roster audio review unavailable: {error}") from error
+        if notice:
+            animator.add_transcript("Case", notice)
+        if not enabled:
+            performance_profile = None
     test_tools, tests_by_tool = _test_tools(tests)
     animator.skill_engine = SkillEngine(tuple(PatientType)[patient_index].name, tests)
     animator._available_test_count = len(animator.skill_engine.catalog)
@@ -2298,6 +2350,7 @@ async def _conversation_session(
                         call, tests_by_tool, animator, current,
                         present_result=present,
                         evidence_audio={test.description.casefold(): test.audio for test in tests if test.audio},
+                        cue_event=lambda event: runtime.play_event_cue(event, allow_skill=True),
                     ),
                 )
                 await _run_connected_session(
@@ -2442,6 +2495,15 @@ async def _run_connected_session(
                 # create a response for silence.
                 await asyncio.sleep(0.005)
 
+        async def perform_idle_reactions() -> None:
+            patient = tuple(PatientType)[animator._patient_number - 1].name
+            event = {"RASH_PATIENT": "rash_fidget",
+                     "ELDERLY_WITH_BACK_PAIN": "back_posture"}.get(patient)
+            while not stop.is_set():
+                await asyncio.sleep(45)
+                if event is not None:
+                    await runtime.play_event_cue(event)
+
         async def finish_consultation() -> None:
             await animator._consultation_finished.wait()
             await runtime.interrupt()
@@ -2499,6 +2561,7 @@ async def _run_connected_session(
             asyncio.create_task(runtime.send_user_requests()),
             asyncio.create_task(runtime.process_speech()),
             asyncio.create_task(watch_push_to_talk()),
+            asyncio.create_task(perform_idle_reactions()),
             asyncio.create_task(finish_consultation()),
         }
         if input_stream is not None:

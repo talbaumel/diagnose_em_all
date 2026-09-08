@@ -6,7 +6,10 @@
       "file": "assets/audio/coughvid/dry_01_short.wav",
       "sha256": "439bf9ef023a6b9c271539f73e90ea7136cb0a3896c9fc14c961416ee58b25aa",
       "caption": "[coughs]",
-      "contexts": ["internal_pause", "requested"],
+      "contexts": [
+        "internal_pause",
+        "requested"
+      ],
       "gain_db": 0,
       "status": "gameplay_trial",
       "provenance": "assets/audio/coughvid/SOURCES.json",
@@ -18,7 +21,10 @@
       "file": "assets/audio/cue_candidates/prepared/sniffle_02.wav",
       "sha256": "f3ac4b3eff517267edbc14f177fa37342c57d2d6cebb6a402978cb7e3cb17e37",
       "caption": "[sniffles]",
-      "contexts": ["internal_pause", "requested"],
+      "contexts": [
+        "internal_pause",
+        "requested"
+      ],
       "gain_db": 0,
       "status": "gameplay_trial",
       "provenance": "assets/audio/cue_candidates/SOURCES.json",
@@ -30,7 +36,10 @@
       "file": "assets/audio/cue_candidates/prepared/sneeze_02.wav",
       "sha256": "e85d57b180d17c7ffb787f1e1d477170dc201b68914f6d7c244278b5d87f1f8d",
       "caption": "[sneezes]",
-      "contexts": ["internal_pause", "requested"],
+      "contexts": [
+        "internal_pause",
+        "requested"
+      ],
       "gain_db": 0,
       "status": "gameplay_trial",
       "provenance": "assets/audio/cue_candidates/SOURCES.json",
@@ -42,12 +51,285 @@
       "file": "assets/audio/cue_candidates/prepared/throat_clear_01.wav",
       "sha256": "2a5302de10090343335ba15fa0dbe7affcdec698e38865fb80c86cd8d89ed234",
       "caption": "[clears throat]",
-      "contexts": ["internal_pause", "requested"],
+      "contexts": [
+        "internal_pause",
+        "requested"
+      ],
       "gain_db": 0,
       "status": "gameplay_trial",
       "provenance": "assets/audio/cue_candidates/SOURCES.json",
       "license": "CC0-1.0; FSD50K dataset CC-BY-4.0",
       "review": "Prepared throat-clear promoted following the user's request to integrate throat-clearing. Same source contributor as the sniffle; character identity and clinical appropriateness are not established."
+    },
+    "teen_gurgle_01": {
+      "kind": "stomach_gurgle",
+      "file": "assets/audio/roster_candidates/prepared/teen_gurgle_01.wav",
+      "sha256": "42925c24a3915042ed72d57c06c1e133465023645b8012c3bf2bd876d5037760",
+      "caption": "[stomach gurgles]",
+      "contexts": [
+        "internal_pause"
+      ],
+      "gain_db": 0,
+      "status": "gameplay_trial",
+      "provenance": "assets/audio/roster_candidates/SOURCES.json",
+      "license": "CC0-1.0; FSD50K dataset CC-BY-4.0",
+      "review": "Technical candidate only. Human listening, character fit, clinical and privacy review PENDING. Default-off roster gate; explicit audition is not release approval."
+    },
+    "teen_exhale_01": {
+      "kind": "discomfort_exhale",
+      "file": "assets/audio/roster_candidates/prepared/teen_exhale_01.wav",
+      "sha256": "8545b5661981cd621c1e5ae1db187e8966a387697a48464f28d3b09891dcba73",
+      "caption": "[exhales softly]",
+      "contexts": [
+        "internal_pause"
+      ],
+      "gain_db": 0,
+      "status": "gameplay_trial",
+      "provenance": "assets/audio/roster_candidates/SOURCES.json",
+      "license": "CC0-1.0; FSD50K dataset CC-BY-4.0",
+      "review": "Technical candidate only. Human listening, character fit, clinical and privacy review PENDING. Default-off roster gate; explicit audition is not release approval."
+    },
+    "migraine_exhale_01": {
+      "kind": "discomfort_exhale",
+      "file": "assets/audio/roster_candidates/prepared/migraine_exhale_01.wav",
+      "sha256": "695d25fdc675bf714dc453fd4bf8fd1058304d49ac72a1a3d2544b927dfe6b0b",
+      "caption": "[exhales softly]",
+      "contexts": [
+        "internal_pause"
+      ],
+      "gain_db": 0,
+      "status": "gameplay_trial",
+      "provenance": "assets/audio/roster_candidates/SOURCES.json",
+      "license": "CC0-1.0; FSD50K dataset CC-BY-4.0",
+      "review": "Technical candidate only. Human listening, character fit, clinical and privacy review PENDING. Default-off roster gate; explicit audition is not release approval."
+    },
+    "allergy_sniffle_01": {
+      "kind": "sniffle",
+      "file": "assets/audio/roster_candidates/prepared/allergy_sniffle_01.wav",
+      "sha256": "319db62c289ec2e4b71fd6c89697dad142a5bd4f9ee8977a5c4632b3085fcd04",
+      "caption": "[sniffles]",
+      "contexts": [
+        "internal_pause",
+        "requested"
+      ],
+      "gain_db": 0,
+      "status": "gameplay_trial",
+      "provenance": "assets/audio/roster_candidates/SOURCES.json",
+      "license": "CC0-1.0; FSD50K dataset CC-BY-4.0",
+      "review": "Technical candidate only. Human listening, character fit, clinical and privacy review PENDING. Default-off roster gate; explicit audition is not release approval."
+    },
+    "allergy_sniffle_02": {
+      "kind": "sniffle",
+      "file": "assets/audio/roster_candidates/prepared/allergy_sniffle_02.wav",
+      "sha256": "e786e2d1759c438b382073956c7eb008900ff59e2fbcfd59b16fd5bd2b21d015",
+      "caption": "[sniffles]",
+      "contexts": [
+        "internal_pause",
+        "requested"
+      ],
+      "gain_db": 0,
+      "status": "gameplay_trial",
+      "provenance": "assets/audio/roster_candidates/SOURCES.json",
+      "license": "CC0-1.0; FSD50K dataset CC-BY-4.0",
+      "review": "Technical candidate only. Human listening, character fit, clinical and privacy review PENDING. Default-off roster gate; explicit audition is not release approval."
+    },
+    "allergy_sneeze_01": {
+      "kind": "sneeze",
+      "file": "assets/audio/roster_candidates/prepared/allergy_sneeze_01.wav",
+      "sha256": "8acebbb5075acae12fef6516f915ea12e6310cddf27ece06cc6604e735ebed5a",
+      "caption": "[sneezes]",
+      "contexts": [
+        "internal_pause"
+      ],
+      "gain_db": 0,
+      "status": "gameplay_trial",
+      "provenance": "assets/audio/roster_candidates/SOURCES.json",
+      "license": "CC0-1.0; FSD50K dataset CC-BY-4.0",
+      "review": "Technical candidate only. Human listening, character fit, clinical and privacy review PENDING. Default-off roster gate; explicit audition is not release approval."
+    },
+    "allergy_sneeze_02": {
+      "kind": "sneeze",
+      "file": "assets/audio/roster_candidates/prepared/allergy_sneeze_02.wav",
+      "sha256": "9de84cd974202f69139cb35100c0c28e015afa5433e5846a127aad464f245530",
+      "caption": "[sneezes]",
+      "contexts": [
+        "internal_pause"
+      ],
+      "gain_db": 0,
+      "status": "gameplay_trial",
+      "provenance": "assets/audio/roster_candidates/SOURCES.json",
+      "license": "CC0-1.0; FSD50K dataset CC-BY-4.0",
+      "review": "Technical candidate only. Human listening, character fit, clinical and privacy review PENDING. Default-off roster gate; explicit audition is not release approval."
+    },
+    "athlete_effort_01": {
+      "kind": "effort_exhale",
+      "file": "assets/audio/roster_candidates/prepared/athlete_effort_01.wav",
+      "sha256": "2424b0b4cc612d8a91641fdab9f0bffa454cda29ae28560049f82df40be45e7b",
+      "caption": "[exhales with effort]",
+      "contexts": [
+        "event"
+      ],
+      "gain_db": 0,
+      "status": "gameplay_trial",
+      "provenance": "assets/audio/roster_candidates/SOURCES.json",
+      "license": "CC0-1.0; FSD50K dataset CC-BY-4.0",
+      "review": "Technical candidate only. Human listening, character fit, clinical and privacy review PENDING. Default-off roster gate; explicit audition is not release approval."
+    },
+    "athlete_effort_02": {
+      "kind": "effort_exhale",
+      "file": "assets/audio/roster_candidates/prepared/athlete_effort_02.wav",
+      "sha256": "75f24bd86c46a52e50d4e6954a2a28bc9907d7b5157ea417a8863b4150966200",
+      "caption": "[exhales with effort]",
+      "contexts": [
+        "event"
+      ],
+      "gain_db": 0,
+      "status": "gameplay_trial",
+      "provenance": "assets/audio/roster_candidates/SOURCES.json",
+      "license": "CC0-1.0; FSD50K dataset CC-BY-4.0",
+      "review": "Technical candidate only. Human listening, character fit, clinical and privacy review PENDING. Default-off roster gate; explicit audition is not release approval."
+    },
+    "anxious_exhale_01": {
+      "kind": "sigh",
+      "file": "assets/audio/roster_candidates/prepared/anxious_exhale_01.wav",
+      "sha256": "e2904aa2e58863c52ccf5eeca3751dd6258fb3a742f69381445f31b8d431ee45",
+      "caption": "[sighs softly]",
+      "contexts": [
+        "internal_pause"
+      ],
+      "gain_db": 0,
+      "status": "gameplay_trial",
+      "provenance": "assets/audio/roster_candidates/SOURCES.json",
+      "license": "CC0-1.0; FSD50K dataset CC-BY-4.0",
+      "review": "Technical candidate only. Human listening, character fit, clinical and privacy review PENDING. Default-off roster gate; explicit audition is not release approval."
+    },
+    "flu_cough_01": {
+      "kind": "cough",
+      "file": "assets/audio/roster_candidates/prepared/flu_cough_01.wav",
+      "sha256": "dd8b73f9d1ff7b8eaeacd56093af65aa997dbc9e0518dcc49cb0f10b9aa55fd8",
+      "caption": "[coughs]",
+      "contexts": [
+        "internal_pause",
+        "requested"
+      ],
+      "gain_db": 0,
+      "status": "gameplay_trial",
+      "provenance": "assets/audio/roster_candidates/SOURCES.json",
+      "license": "CC0-1.0; FSD50K dataset CC-BY-4.0",
+      "review": "Technical candidate only. Human listening, character fit, clinical and privacy review PENDING. Default-off roster gate; explicit audition is not release approval."
+    },
+    "flu_cough_02": {
+      "kind": "cough",
+      "file": "assets/audio/roster_candidates/prepared/flu_cough_02.wav",
+      "sha256": "18fbae6db7883c6c2df691522931a713fa9ff3f861f43e8f76cb0c4c7a2667ea",
+      "caption": "[coughs]",
+      "contexts": [
+        "internal_pause",
+        "requested"
+      ],
+      "gain_db": 0,
+      "status": "gameplay_trial",
+      "provenance": "assets/audio/roster_candidates/SOURCES.json",
+      "license": "CC0-1.0; FSD50K dataset CC-BY-4.0",
+      "review": "Technical candidate only. Human listening, character fit, clinical and privacy review PENDING. Default-off roster gate; explicit audition is not release approval."
+    },
+    "rash_rustle_01": {
+      "kind": "clothing_rustle",
+      "file": "assets/audio/roster_candidates/prepared/rash_rustle_01.wav",
+      "sha256": "3f5f4df32512830e188d2aa69cd4cd07792e0ca0d4785b18e021bd3bb66a136c",
+      "caption": "[clothing rustles]",
+      "contexts": [
+        "event"
+      ],
+      "gain_db": 0,
+      "status": "gameplay_trial",
+      "provenance": "assets/audio/roster_candidates/SOURCES.json",
+      "license": "CC0-1.0; FSD50K dataset CC-BY-4.0",
+      "review": "Technical candidate only. Human listening, character fit, clinical and privacy review PENDING. Default-off roster gate; explicit audition is not release approval."
+    },
+    "rash_rustle_02": {
+      "kind": "clothing_rustle",
+      "file": "assets/audio/roster_candidates/prepared/rash_rustle_02.wav",
+      "sha256": "bfe4eec9704fd282abf09f5b459b7f832d40d8746014aee6a159ca238bd332c8",
+      "caption": "[clothing rustles]",
+      "contexts": [
+        "event"
+      ],
+      "gain_db": 0,
+      "status": "gameplay_trial",
+      "provenance": "assets/audio/roster_candidates/SOURCES.json",
+      "license": "CC0-1.0; FSD50K dataset CC-BY-4.0",
+      "review": "Technical candidate only. Human listening, character fit, clinical and privacy review PENDING. Default-off roster gate; explicit audition is not release approval."
+    },
+    "back_effort_01": {
+      "kind": "effort_exhale",
+      "file": "assets/audio/roster_candidates/prepared/back_effort_01.wav",
+      "sha256": "36682865ac63079b679de4526c66512a206346528cd936707d8034bed4e8af56",
+      "caption": "[exhales with effort]",
+      "contexts": [
+        "event"
+      ],
+      "gain_db": 0,
+      "status": "gameplay_trial",
+      "provenance": "assets/audio/roster_candidates/SOURCES.json",
+      "license": "CC0-1.0; FSD50K dataset CC-BY-4.0",
+      "review": "Technical candidate only. Human listening, character fit, clinical and privacy review PENDING. Default-off roster gate; explicit audition is not release approval."
+    },
+    "back_effort_02": {
+      "kind": "effort_exhale",
+      "file": "assets/audio/roster_candidates/prepared/back_effort_02.wav",
+      "sha256": "488fc965b8c77c6505e00e1223c6f7e88811147f5963b3a7441e8f694da5c1c8",
+      "caption": "[exhales with effort]",
+      "contexts": [
+        "event"
+      ],
+      "gain_db": 0,
+      "status": "gameplay_trial",
+      "provenance": "assets/audio/roster_candidates/SOURCES.json",
+      "license": "CC0-1.0; FSD50K dataset CC-BY-4.0",
+      "review": "Technical candidate only. Human listening, character fit, clinical and privacy review PENDING. Default-off roster gate; explicit audition is not release approval."
+    },
+    "worker_yawn_01": {
+      "kind": "yawn",
+      "file": "assets/audio/roster_candidates/prepared/worker_yawn_01.wav",
+      "sha256": "4e05d30c7f6c1b0956e719b07a0a08f4d3e00931e3c66d9130afa62f6ebc6ca4",
+      "caption": "[yawns]",
+      "contexts": [
+        "internal_pause"
+      ],
+      "gain_db": 0,
+      "status": "gameplay_trial",
+      "provenance": "assets/audio/roster_candidates/SOURCES.json",
+      "license": "CC0-1.0; FSD50K dataset CC-BY-4.0",
+      "review": "Technical candidate only. Human listening, character fit, clinical and privacy review PENDING. Default-off roster gate; explicit audition is not release approval."
+    },
+    "worker_yawn_02": {
+      "kind": "yawn",
+      "file": "assets/audio/roster_candidates/prepared/worker_yawn_02.wav",
+      "sha256": "a06feee1942ed0685d9689fba941d1d719eed178437854774a4b2f4a32c09770",
+      "caption": "[yawns]",
+      "contexts": [
+        "internal_pause"
+      ],
+      "gain_db": 0,
+      "status": "gameplay_trial",
+      "provenance": "assets/audio/roster_candidates/SOURCES.json",
+      "license": "CC0-1.0; FSD50K dataset CC-BY-4.0",
+      "review": "Technical candidate only. Human listening, character fit, clinical and privacy review PENDING. Default-off roster gate; explicit audition is not release approval."
+    },
+    "neighbor_throat_clear_01": {
+      "kind": "throat_clear",
+      "file": "assets/audio/roster_candidates/prepared/neighbor_throat_clear_01.wav",
+      "sha256": "145a3e4fd1b17d3d46f0e74682e57694ddb51bc7f14aba37f6cfef21200f291c",
+      "caption": "[clears throat]",
+      "contexts": [
+        "internal_pause"
+      ],
+      "gain_db": 0,
+      "status": "gameplay_trial",
+      "provenance": "assets/audio/roster_candidates/SOURCES.json",
+      "license": "CC0-1.0; FSD50K dataset CC-BY-4.0",
+      "review": "Technical candidate only. Human listening, character fit, clinical and privacy review PENDING. Default-off roster gate; explicit audition is not release approval."
     }
   }
 }

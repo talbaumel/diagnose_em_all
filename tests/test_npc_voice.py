@@ -35,7 +35,10 @@ class VoiceConfigurationTests(unittest.TestCase):
         assert profile.voice is not None
         self.assertIn("local processor", profile.instructions)
         self.assertEqual(profile.voice.edge_ms, 0)
-        self.assertTrue(all(scenario.performance_profile is None for scenario in scenarios[1:]))
+        for scenario in scenarios[1:]:
+            assert scenario.performance_profile is not None
+            self.assertIsNone(scenario.performance_profile.voice)
+            self.assertIsNotNone(scenario.performance_profile.cues)
         self.assertIsNone(PerformanceProfile().voice)
 
     def test_json_disabled_missing_and_invalid(self):

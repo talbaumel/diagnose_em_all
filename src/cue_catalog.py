@@ -10,6 +10,13 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 CATALOG_PATH = ROOT / "assets/audio/cue_catalog.json"
+CUE_KINDS = frozenset({
+    "cough", "sniffle", "sneeze", "throat_clear", "sigh", "yawn",
+    "stomach_gurgle", "discomfort_exhale", "effort_exhale", "clothing_rustle",
+})
+LOCAL_CUE_EVENTS = frozenset({
+    "ankle_examination", "back_examination", "rash_fidget", "back_posture",
+})
 
 
 @dataclass(frozen=True)
@@ -44,7 +51,7 @@ def load_catalog() -> dict[str, Cue]:
             raise ValueError("Invalid cue catalog entry")
         if value.get("status") not in ("gameplay_trial", "approved"):
             raise ValueError("Only explicitly promoted cues belong in the runtime catalog")
-        if value.get("kind") not in ("cough", "sniffle", "sneeze", "throat_clear", "sigh"):
+        if value.get("kind") not in CUE_KINDS:
             raise ValueError("Unknown cue kind")
         for key in ("file", "sha256", "caption", "provenance", "license", "review"):
             if not isinstance(value.get(key), str) or not value[key].strip():
@@ -53,7 +60,7 @@ def load_catalog() -> dict[str, Cue]:
             raise ValueError("Invalid cue hash")
         contexts = value.get("contexts")
         if not isinstance(contexts, list) or not contexts or any(
-            item not in ("internal_pause", "requested") for item in contexts
+            item not in ("internal_pause", "requested", "event") for item in contexts
         ):
             raise ValueError("Invalid cue contexts")
         if value.get("gain_db") != 0:

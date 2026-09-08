@@ -28,15 +28,16 @@ def speech_pcm() -> bytes:
 class CatalogAndPolicyTests(unittest.TestCase):
     def test_promoted_catalog_and_kid_only(self):
         catalog = load_catalog()
-        self.assertEqual(set(catalog), {"cold_dry_cough", "cold_short_sniffle", "cold_sneeze", "cold_throat_clear"})
+        cold_ids = {"cold_dry_cough", "cold_short_sniffle", "cold_sneeze", "cold_throat_clear"}
+        self.assertTrue(cold_ids <= set(catalog))
         for cue in catalog.values():
             cue.verify()
         scenarios = [load_patient_scenario(path) for path in sorted((ROOT/"data/prompts").glob("*.json"))]
         kid = scenarios[0].performance_profile
         assert kid and kid.cues
-        self.assertEqual({c.id for c in kid.cues}, set(catalog))
+        self.assertEqual({c.id for c in kid.cues}, cold_ids)
         self.assertEqual({tool["name"] for tool in kid.cue_tools}, {"cough", "sniffle", "sneeze", "throat_clear"})
-        self.assertTrue(all(s.performance_profile is None for s in scenarios[1:]))
+        self.assertTrue(all(s.performance_profile is not None for s in scenarios[1:]))
         self.assertNotIn("child", PerformanceProfile(cues=(), delivery="Speak as an adult.").instructions)
         self.assertEqual(PerformanceProfile(cues=()).cue_tools, [])
 
@@ -272,7 +273,8 @@ class InlineGameplayTests(unittest.IsolatedAsyncioTestCase):
         self.speech(item="one")
         self.speech(item="two")
         self.done()
-        await until(lambda: self.runtime.playback.queue.qsize() == 1)
+        await until(lambda: self.runtime.playback.active is not None
+                    and self.runtime.playback.queue.qsize() == 1)
         first = self.active_segment()
         queued = self.runtime.playback.queue.get_nowait()
         second, _ = queued
