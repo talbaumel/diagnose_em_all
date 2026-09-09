@@ -14,6 +14,7 @@ import asyncio
 import base64
 import json
 import math
+import os
 import re
 import threading
 import time
@@ -62,10 +63,7 @@ from src.consultation_review import (
     score_consultation,
 )
 
-REALTIME_URL = (
-    "wss://tabaumel-resource.openai.azure.com/openai/v1/realtime"
-    "?model=gpt-realtime-2.1"
-)
+REALTIME_URL_ENV = "AZURE_OPENAI_REALTIME_URL"
 AZURE_OPENAI_SCOPE = "https://cognitiveservices.azure.com/.default"
 AZURE_TOKEN_REFRESH_MARGIN_SECONDS = 300
 _cached_realtime_token: AccessToken | None = None
@@ -73,6 +71,13 @@ REALTIME_OPEN_TIMEOUT_SECONDS = 30
 REALTIME_CONNECT_ATTEMPTS = 3
 SAMPLE_RATE = 24_000
 CHANNELS = 1
+
+
+def realtime_url() -> str:
+    value = os.environ.get(REALTIME_URL_ENV, "").strip()
+    if not value:
+        raise RuntimeError(f"Set {REALTIME_URL_ENV} to the full Realtime WebSocket URL.")
+    return value
 BLOCK_DURATION_MS = 100
 ANIMATION_FPS = 6
 RELIEVED_DURATION_SECONDS = 5
@@ -583,7 +588,7 @@ async def _realtime_connection(
     for attempt in range(1, REALTIME_CONNECT_ATTEMPTS + 1):
         try:
             websocket = await websockets.connect(
-                REALTIME_URL,
+                realtime_url(),
                 additional_headers=headers,
                 max_size=None,
                 open_timeout=REALTIME_OPEN_TIMEOUT_SECONDS,

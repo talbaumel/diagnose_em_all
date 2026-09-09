@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
@@ -10,7 +11,7 @@ import httpx
 from src.care_plan import CarePlan
 
 
-SCORING_ENDPOINT = "https://tabaumel-resource.services.ai.azure.com/mai/v1/chat/completions"
+SCORING_ENDPOINT_ENV = "AZURE_AI_SCORING_ENDPOINT"
 SCORING_MODEL = "MAI-Thinking-1"
 REVIEW_TIMEOUT_SECONDS = 120
 SCORE_AXES = {
@@ -60,6 +61,13 @@ empathy, clarity, history_taking, diagnostic_reasoning, prescribing, referrals. 
 observations, with one actionable improvement where appropriate. Keep each feedback
 under 100 words. If the transcript is insufficient, say so; never fabricate evidence.
 """
+
+
+def scoring_endpoint() -> str:
+    value = os.environ.get(SCORING_ENDPOINT_ENV, "").strip()
+    if not value:
+        raise RuntimeError(f"Set {SCORING_ENDPOINT_ENV} to the full scoring endpoint URL.")
+    return value
 
 
 @dataclass(frozen=True)
@@ -133,7 +141,7 @@ async def score_consultation(
     }
     async with httpx.AsyncClient(timeout=90, transport=transport) as client:
         response = await client.post(
-            SCORING_ENDPOINT,
+            scoring_endpoint(),
             headers=headers,
             json={
                 "model": SCORING_MODEL,

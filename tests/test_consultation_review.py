@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import unittest
 from unittest.mock import patch
 
 import httpx
 
 from src.care_plan import Prescription, Referral
-from src.consultation_review import SCORING_ENDPOINT, SCORING_MODEL, SCORE_AXES, ConsultationMetrics, format_duration, parse_scorecard, score_consultation
+from src.consultation_review import SCORING_ENDPOINT_ENV, SCORING_MODEL, SCORE_AXES, ConsultationMetrics, format_duration, parse_scorecard, score_consultation
 
 
 def scorecard_document():
@@ -50,6 +51,12 @@ class ScorecardParsingTests(unittest.TestCase):
 
 
 class ScoringClientTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.endpoint = "https://scoring.example.test/mai/v1/chat/completions"
+        self.endpoint_environment = patch.dict(os.environ, {SCORING_ENDPOINT_ENV: self.endpoint})
+        self.endpoint_environment.start()
+        self.addCleanup(self.endpoint_environment.stop)
+
     async def test_endpoint_payload_and_response(self):
         transcript = [("You", "When did this begin?"), ("Patient", "Yesterday.")]
         metrics = ConsultationMetrics(started_at=10, finished_at=45)
@@ -62,7 +69,7 @@ class ScoringClientTests(unittest.IsolatedAsyncioTestCase):
         metrics.care_plan.add(Referral("Specialist clinic", "Further assessment", "Urgent"))
 
         def respond(request):
-            self.assertEqual(str(request.url), SCORING_ENDPOINT)
+            self.assertEqual(str(request.url), self.endpoint)
             self.assertEqual(request.headers["Authorization"], "Bearer test-token")
             payload = json.loads(request.content)
             self.assertEqual(payload["model"], SCORING_MODEL)

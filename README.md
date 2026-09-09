@@ -3,6 +3,23 @@
 A voice-driven diagnostic game powered by Azure OpenAI Realtime. Play as the
 clinician, interview animated patients, request tests, and identify each disease.
 
+<p align="center">
+  <img src="data/sprites/ui/splash_screen.png" alt="Diagnose Em' All splash screen" width="720">
+</p>
+
+## Screenshots
+
+<table>
+  <tr>
+    <td align="center"><img src="docs/screenshots/hospital.png" alt="Exploring St. Alder Hospital" width="360"><br><sub>Explore St. Alder Hospital and meet its patients.</sub></td>
+    <td align="center"><img src="docs/screenshots/consultation.png" alt="Interviewing a patient" width="360"><br><sub>Interview animated patients by voice or text.</sub></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="docs/screenshots/evidence.png" alt="Reviewing a temperature test result" width="360"><br><sub>Request examinations and review the evidence.</sub></td>
+    <td align="center"><img src="docs/screenshots/consultation-review.png" alt="Reviewing consultation scores" width="360"><br><sub>Diagnose the case and reflect on detailed feedback.</sub></td>
+  </tr>
+</table>
+
 ## Requirements
 
 - [uv](https://docs.astral.sh/uv/getting-started/installation/) for Python and project dependencies.
@@ -43,7 +60,19 @@ authenticated feed cannot bootstrap its own missing credential provider.
 Restart your shell if needed after updating PATH. Keep credentials out of project
 files and chat. The game's Azure sign-in is separate from package-feed authentication.
 
-Then sync the project from the repository root:
+Then run the setup script from the repository root:
+
+```bash
+./setup.sh
+```
+
+The script verifies `uv` and the Azure Artifacts keyring backend, creates `.venv`
+with Python 3.13, installs the exact dependencies from `uv.lock` (including voice
+processing), and checks that the runtime dependencies import successfully. Set
+`PYTHON_VERSION` to select another supported version, for example
+`PYTHON_VERSION=3.11 ./setup.sh`.
+
+To perform the equivalent environment setup manually:
 
 ```bash
 keyring --list-backends
@@ -94,12 +123,40 @@ and can be retried. Tokens are held only in memory and reused between patients
 until they approach expiry; restarting the game may require signing in again.
 No passwords or tokens are written to game saves or logs.
 
+Set the deployment endpoints in your shell before starting the game. Keep the
+actual resource hostnames outside the repository:
+
+```bash
+export AZURE_OPENAI_REALTIME_URL="YOUR_REALTIME_WEBSOCKET_URL"
+export AZURE_AI_SCORING_ENDPOINT="YOUR_SCORING_CHAT_COMPLETIONS_URL"
+```
+
 Use an account with the **Cognitive Services OpenAI User** role (or equivalent
 permissions) on the configured resource. Signing in does not grant resource
 access: if Azure denies access, use another authorized account or ask the resource
 owner to grant the required role. This development game uses the Azure Identity
 SDK's default development application for browser sign-in; production deployments
 should use their own registered Microsoft Entra application.
+
+### Provision Foundry models
+
+An existing Azure AI Services/Foundry account needs the `gpt-realtime-2.1` and
+`MAI-Thinking-1` deployments. Preview the catalog, quota, and proposed changes:
+
+```bash
+uv run python -m tools.provision_foundry_models \
+  --subscription SUBSCRIPTION_ID \
+  --resource-group RESOURCE_GROUP \
+  --account-name ACCOUNT_NAME \
+  --dry-run
+```
+
+Remove `--dry-run` to review an interactive confirmation and create missing
+deployments. Use `--yes` for non-interactive automation. The script reads the
+account location, current model catalog, supported SKUs, and available quota at
+runtime. Matching deployments are left unchanged; a conflicting deployment name
+causes the script to stop rather than overwrite it. The signed-in identity must
+be able to read account/quota metadata and create model deployments.
 
 ## Run
 
@@ -432,10 +489,10 @@ diagnosis retries, and time outside the focused window are included. Time and te
 coverage are descriptive statistics, not incentives to rush or order every test.
 
 Scoring uses the existing Azure CLI sign-in and sends the full text transcript,
-case context, diagnosis, elapsed time, discovered test results, and recorded care orders to:
+case context, diagnosis, elapsed time, discovered test results, and recorded care orders to
+the endpoint configured by `AZURE_AI_SCORING_ENDPOINT`:
 
 ```text
-https://tabaumel-resource.services.ai.azure.com/mai/v1/chat/completions
 model: MAI-Thinking-1
 ```
 

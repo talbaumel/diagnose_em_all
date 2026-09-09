@@ -14,12 +14,7 @@ from urllib import error as urllib_error
 from urllib import parse as urllib_parse
 from urllib import request as urllib_request
 
-DEFAULT_ENDPOINT = (
-    "https://tabaumel-resource.services.ai.azure.com/"
-    "openai/v1/images/generations"
-)
 DEFAULT_MODEL = "gpt-image-2"
-DEFAULT_TENANT = "72f988bf-86f1-41af-91ab-2d7cd011db47"
 DEFAULT_TOKEN_SCOPE = "https://ai.azure.com/.default"
 MAX_INPUT_IMAGES = 16
 MAX_INPUT_FILE_BYTES = 50 * 1024 * 1024
@@ -63,7 +58,7 @@ def parse_args() -> argparse.Namespace:
         "--endpoint",
         default=os.environ.get(
             "AZURE_IMAGE_ENDPOINT",
-            os.environ.get("AZURE_IMAGE_GENERATION_ENDPOINT", DEFAULT_ENDPOINT),
+            os.environ.get("AZURE_IMAGE_GENERATION_ENDPOINT", ""),
         ),
         help="Image generation endpoint.",
     )
@@ -82,8 +77,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--tenant",
-        default=os.environ.get("AZURE_TENANT_ID", DEFAULT_TENANT),
-        help="Microsoft Entra tenant used by Azure CLI authentication.",
+        default=os.environ.get("AZURE_TENANT_ID"),
+        help="Optional Microsoft Entra tenant used by Azure CLI authentication.",
     )
     parser.add_argument(
         "--token-scope",
@@ -116,7 +111,10 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Print request metadata without authenticating or sending image data.",
     )
-    return parser.parse_args()
+    arguments = parser.parse_args()
+    if not arguments.endpoint:
+        parser.error("Pass --endpoint or set AZURE_IMAGE_ENDPOINT.")
+    return arguments
 
 
 def read_prompt(args: argparse.Namespace) -> str:
@@ -185,18 +183,18 @@ def validate_edit_files(
     return validated, mask
 
 
-def get_access_token(tenant: str, token_scope: str) -> str:
+def get_access_token(tenant: str | None, token_scope: str) -> str:
     command = [
         "az",
         "account",
         "get-access-token",
         "--scope",
         token_scope,
-        "--tenant",
-        tenant,
         "--output",
         "json",
     ]
+    if tenant:
+        command.extend(("--tenant", tenant))
     try:
         result = subprocess.run(
             command,

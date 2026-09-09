@@ -8,16 +8,16 @@ argument-hint: "Describe the image to generate or edit, input image if any, and 
 
 Generate new images or edit existing images through the user's Azure OpenAI-compatible Images API deployment.
 
-## Service Defaults
+## Service Configuration
 
-- Generation endpoint: `https://tabaumel-resource.services.ai.azure.com/openai/v1/images/generations`
-- Edit endpoint: `https://tabaumel-resource.services.ai.azure.com/openai/v1/images/edits` (derived automatically)
+- Generation endpoint: `AZURE_IMAGE_ENDPOINT` or the `--endpoint` argument (required)
+- Edit endpoint: `AZURE_IMAGE_EDIT_ENDPOINT` or derived automatically from the generation endpoint
 - Deployment: `gpt-image-2`
 - Authentication: Microsoft Entra ID through the signed-in Azure CLI account
 - Token scope: `https://ai.azure.com/.default`
-- Tenant: `72f988bf-86f1-41af-91ab-2d7cd011db47`
+- Tenant: active Azure CLI tenant, or optional `AZURE_TENANT_ID`
 
-Never request, print, or store an API key. If authentication fails, ask the user to run `az login --tenant 72f988bf-86f1-41af-91ab-2d7cd011db47` directly in their terminal.
+Never request, print, or store an API key. If authentication fails, ask the user to run `az login` directly in their terminal.
 
 ## Workflow
 
@@ -32,6 +32,7 @@ Never request, print, or store an API key. If authentication fails, ask the user
 
 ```bash
 python3 "$PWD/.github/skills/azure-image-generation/scripts/generate_image.py" \
+  --endpoint "$AZURE_IMAGE_ENDPOINT" \
   --prompt "A precise description of the requested image" \
   --output "$PWD/path/to/image.png"
 ```
@@ -40,6 +41,7 @@ Edit an existing image while naming what must be preserved:
 
 ```bash
 python3 "$PWD/.github/skills/azure-image-generation/scripts/generate_image.py" \
+  --endpoint "$AZURE_IMAGE_ENDPOINT" \
   --input "$PWD/path/to/source.png" \
   --prompt "Replace the cloudy sky with a warm sunset; preserve the person, pose, framing, and foreground exactly" \
   --output "$PWD/path/to/edited.png" \

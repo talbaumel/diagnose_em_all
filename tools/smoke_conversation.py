@@ -15,7 +15,7 @@ import pygame
 
 from src.audio_playback import PlaybackController, Segment
 from src.hospital_game import load_patient_scenario
-from src.realtime_conversation import REALTIME_URL, PatientAnimator, _combine_prompts, _run_conversation
+from src.realtime_conversation import PatientAnimator, _combine_prompts, _run_conversation
 from tools.preview_performance import RecordingSink
 
 
@@ -29,7 +29,7 @@ def export_speech(segment: Segment, directory: Path, prompt: str, requested_line
         destination.writeframes(segment.pcm)
     metadata = {
         "schema_version": 1, "created_at": datetime.now(timezone.utc).isoformat(),
-        "source_kind": "azure-realtime", "endpoint": REALTIME_URL,
+        "source_kind": "azure-realtime",
         "patient_index": 0, "system_prompt": prompt, "requested_line": requested_line,
         "actual_transcript": segment.caption, "response_id": segment.response_id,
         "item_id": segment.item_id, "content_index": segment.content_index,
