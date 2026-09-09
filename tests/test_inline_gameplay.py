@@ -196,6 +196,51 @@ class InlineGameplayTests(unittest.IsolatedAsyncioTestCase):
         assert active is not None
         return active[0]
 
+    async def test_patients_two_and_four_play_packaged_spontaneous_cues(self):
+        for filename in ("02_stomachache_teen.json", "04_allergy_patient.json"):
+            with self.subTest(patient=filename):
+                profile = load_patient_scenario(ROOT / "data/prompts" / filename).performance_profile
+                assert profile and profile.cues
+                sink = ControlledSink()
+                animator = Mock(push_to_talk=False, evidence_open=False, won=False, _menu=None)
+                runtime = ConversationRuntime(
+                    AsyncMock(), animator, asyncio.Event(), {}, sink,
+                    profile=profile, clock=lambda: self.now,
+                )
+                self.tasks.extend((asyncio.create_task(runtime.process_speech()),
+                                   asyncio.create_task(runtime.playback.run()),
+                                   asyncio.create_task(runtime.finish_responses())))
+                await runtime.interrupt(new_turn=True)
+                await runtime.request_response(runtime.playback.generation)
+                runtime.handle({"type": "response.created", "response": {"id": "roster"}})
+                runtime.handle({
+                    "type": "response.output_audio.delta", "response_id": "roster", "item_id": "speech",
+                    "delta": base64.b64encode(speech_pcm()).decode(),
+                })
+                runtime.handle({
+                    "type": "response.output_audio_transcript.done", "response_id": "roster",
+                    "item_id": "speech", "transcript": "First phrase. Second phrase.",
+                })
+                runtime.handle({
+                    "type": "response.content_part.done", "response_id": "roster", "item_id": "speech",
+                })
+                runtime.handle({
+                    "type": "response.done", "response": {"id": "roster", "status": "completed"},
+                })
+                await until(lambda: runtime.playback.active is not None)
+                assert runtime.playback.active is not None and runtime.policy is not None
+                segment = runtime.playback.active[0]
+                assert segment.insertion is not None
+                self.assertIn(segment.cue_id, {choice.id for choice in profile.cues})
+                self.assertEqual(sink.history, [segment.insertion.pcm])
+                sink.ready = True
+                sink.heard_ms = segment.insertion.spans[1].output_start // 24 + 1
+                await until(lambda: runtime.policy.spontaneous_count == 1)
+                self.assertEqual(animator.add_transcript.call_args.args[1], segment.cue_caption)
+                sink.heard_ms = len(segment.pcm) // 48
+                sink.done = True
+                await until(lambda: "roster" not in runtime.responses)
+
     async def test_internal_cue_markers_source_time_and_cooldown(self):
         await self.begin()
         self.speech()

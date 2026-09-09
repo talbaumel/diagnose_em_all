@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-CATALOG_PATH = ROOT / "assets/audio/cue_catalog.json"
+CATALOG_PATH = ROOT / "data/audio/cue_catalog.json"
 CUE_KINDS = frozenset({
     "cough", "sniffle", "sneeze", "throat_clear", "sigh", "yawn",
     "stomach_gurgle", "discomfort_exhale", "effort_exhale", "clothing_rustle",
@@ -31,7 +31,7 @@ class Cue:
     @property
     def path(self) -> Path:
         path = ROOT / self.file
-        if not path.resolve().is_relative_to(ROOT / "assets/audio") or path.resolve() != path:
+        if not path.resolve().is_relative_to(ROOT / "data/audio") or path.resolve() != path:
             raise ValueError("Cue must be a local audio asset without symlink redirection")
         return path
 

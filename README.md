@@ -176,12 +176,13 @@ check is explicitly marked `capture_check_only` and is not a completed demo.
 
 All eleven patients have character-specific audio profiles. The kid's existing
 performance remains enabled. The ten new profiles are packaged together as
-unreviewed candidates, default-off until the complete roster passes listening
-and live-playtest review. To try them, run the VS Code task **Audition Full
-Roster Audio (Unreviewed)** or:
+unreviewed candidates. Local game launches (F5, the start tasks, and
+`python -m src.debug_example`) enable their audition mode by default and display
+an unreviewed-candidate notice. This does not mark the listening or live-playtest
+review as approved. To enforce the review gate instead, explicitly opt out:
 
 ```bash
-DIAGNOSE_AUDITION_ROSTER_CUES=1 uv run python -m src.debug_example
+DIAGNOSE_AUDITION_ROSTER_CUES=0 uv run python -m src.debug_example
 ```
 
 **F9 / EFFECTS** cycles character-effects volume through 100%, 50%, 25% and
@@ -191,7 +192,7 @@ Ankle/back reactions follow actual examinations or visible posture changes;
 the rash patient uses a subtle fidget rustle, not invented respiratory symptoms.
 See [audio performance](docs/audio-performance.md) for all cue schedules,
 source attribution, reproducible auditions with progress counters, and the
-[hash-bound review form](assets/audio/roster_review.json). Automated tests
+[hash-bound review form](data/audio/roster_review.json). Automated tests
 verify playback, not clinical accuracy or human-perceived character fit.
 
 ## Controls and game loop
@@ -685,14 +686,14 @@ do not start a second game while an existing instance is running. When ready:
 | --- | --- |
 | `data/` | Patient prompts and game artwork |
 | `data/skills/` | Shared skill metadata, illustrations and simulated case outcomes |
-| `assets/audio/` | Source recordings, prepared cues, catalog and license records |
+| `data/audio/` | Source recordings, prepared cues, catalog and license records |
 | `src/` | Game, Realtime routing, playback, cue timing and shared voice engine |
 | `tools/` | Offline auditions, asset preparation, previews and opt-in live checks |
 | `tests/` | Offline regressions and shared audio test doubles |
 | `docs/` | Detailed audio configuration and design |
 | `.artifacts/` | Ignored local developer outputs |
 
-Generated cue listening packs also remain locally under `assets/audio/`, but
+Generated cue listening packs also remain locally under `data/audio/`, but
 are ignored by Git. Do not force-add them to a PR. Source recordings and
 prepared gameplay candidates remain versioned with provenance.
 

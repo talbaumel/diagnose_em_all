@@ -47,7 +47,7 @@
       "fade_out_seconds": 0.02,
       "selection": "First prominent burst, bounded using silence detection at -35 dB with a 120 ms minimum silence. Signal-based selection only; not perceptually screened or verified as a child's cough.",
       "changes": "Trimmed, attenuated by 6 dB, and faded at both edges. No pitch shifting or voice matching. Original recording retained unchanged.",
-      "command": "ffmpeg -nostdin -n -i assets/audio/coughvid/dry_01.wav -af 'atrim=start=2.13:end=3.44,asetpts=PTS-STARTPTS,volume=-6dB,afade=t=in:st=0:d=0.01,afade=t=out:st=1.29:d=0.02' -ar 24000 -ac 1 -c:a pcm_s16le -map_metadata -1 assets/audio/coughvid/dry_01_short.wav"
+      "command": "ffmpeg -nostdin -n -i data/audio/coughvid/dry_01.wav -af 'atrim=start=2.13:end=3.44,asetpts=PTS-STARTPTS,volume=-6dB,afade=t=in:st=0:d=0.01,afade=t=out:st=1.29:d=0.02' -ar 24000 -ac 1 -c:a pcm_s16le -map_metadata -1 data/audio/coughvid/dry_01_short.wav"
     }
   ],
   "clips": [

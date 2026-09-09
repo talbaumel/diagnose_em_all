@@ -16,7 +16,7 @@ from numpy.typing import NDArray
 
 from tools.prepare_cue_candidates import digest, prepare_levels, save_wave
 
-ROOT = Path(__file__).resolve().parents[1] / "assets/audio/roster_candidates"
+ROOT = Path(__file__).resolve().parents[1] / "data/audio/roster_candidates"
 
 
 def progress(label: str, done: int, total: int, started: float) -> None:

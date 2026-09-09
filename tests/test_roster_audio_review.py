@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import runpy
 import tempfile
 import unittest
 from pathlib import Path
@@ -12,6 +14,27 @@ from src.roster_audio_review import (
 
 
 class RosterAudioReviewTests(unittest.TestCase):
+    def test_local_game_enables_roster_audition_and_respects_explicit_override(self):
+        entrypoint = Path(__file__).resolve().parents[1] / "src/debug_example.py"
+        for configured, expected in ((None, True), ("0", False), ("1", True)):
+            with self.subTest(configured=configured), patch.dict("os.environ"), patch(
+                "sys.argv", [str(entrypoint)],
+            ), patch("src.hospital_game.start_hospital_game") as start, patch(
+                "src.roster_audio_review.roster_review_complete", return_value=False,
+            ):
+                if configured is None:
+                    os.environ.pop(AUDITION_ENV, None)
+                else:
+                    os.environ[AUDITION_ENV] = configured
+                start.side_effect = lambda scenarios: self.assertEqual(
+                    roster_audio_enabled()[0], expected,
+                )
+                runpy.run_path(str(entrypoint), run_name="__main__")
+                start.assert_called_once()
+                scenarios = start.call_args.args[0]
+                self.assertEqual(len(scenarios), len(REVIEW_PATIENTS))
+                self.assertTrue(all(scenario.performance_profile is not None for scenario in scenarios))
+
     def test_signoff_requires_every_clip_exact_hash_and_every_patient(self):
         hashes = {"new_cue": "a" * 64}
         review = {

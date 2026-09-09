@@ -14,7 +14,7 @@ from src.patient_performance import PerformanceProfile
 
 HAS_AUDIO_DEPS = all(importlib.util.find_spec(name) is not None for name in ("numpy", "pyworld"))
 ROOT = Path(__file__).resolve().parents[1]
-ASSETS = ROOT / "assets/audio/cue_candidates"
+ASSETS = ROOT / "data/audio/cue_candidates"
 
 
 class CandidateManifestTests(unittest.TestCase):
@@ -40,7 +40,7 @@ class CandidateManifestTests(unittest.TestCase):
                 self.assertFalse(cue["approved_for_gameplay"])
                 self.assertEqual(cue["review_status"], "unreviewed")
                 with self.assertRaises(ValueError):
-                    PerformanceProfile(cough_clip=f"assets/audio/cue_candidates/{cue['file']}")
+                    PerformanceProfile(cough_clip=f"data/audio/cue_candidates/{cue['file']}")
 
     def test_prepared_files_match_manifest(self):
         manifest = json.loads((ASSETS / "SOURCES.json").read_text())

@@ -1,6 +1,7 @@
 # ruff: noqa: I001
 
 import argparse
+import os
 from pathlib import Path
 from typing import Any
 
@@ -9,6 +10,7 @@ from src.hospital_game import (
     load_patient_scenarios,
     start_hospital_game,
 )
+from src.roster_audio_review import AUDITION_ENV
 
 
 PROJECT_ROOT = Path(__file__).parents[1]
@@ -29,4 +31,5 @@ if __name__ == "__main__":
     )
     arguments = parser.parse_args()
     prompt_paths = arguments.prompts or sorted(PROMPTS_DIR.glob("*.json"))
+    os.environ.setdefault(AUDITION_ENV, "1")
     start_hospital_game(load_patient_scenarios(prompt_paths))

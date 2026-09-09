@@ -97,7 +97,7 @@ class CueTimingTests(unittest.TestCase):
 
 class InlinePreviewTests(unittest.TestCase):
     def test_real_asset_pack_has_internal_cues_and_exact_source_mapping(self):
-        packaged = ROOT / "assets/audio/cue_candidates"
+        packaged = ROOT / "data/audio/cue_candidates"
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "assets"
             root.mkdir()

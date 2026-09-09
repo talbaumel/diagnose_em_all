@@ -640,7 +640,10 @@ class HospitalFlowTests(unittest.TestCase):
         scores = iter((7, -2))
         visiting = iter(patients)
         self.assertTrue(patients[0].performance_profile.voice.enabled)
-        self.assertIsNone(patients[1].performance_profile)
+        self.assertEqual(
+            {cue.id for cue in patients[1].performance_profile.cues},
+            {"teen_gurgle_01", "teen_exhale_01"},
+        )
 
         def consult(**kwargs):
             patient = next(visiting)

@@ -14,7 +14,7 @@ from src.voice_profile import VoiceProfile
 from src.cue_catalog import CueChoice, LOCAL_CUE_EVENTS, load_catalog
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-COUGH_CLIP = "assets/audio/coughvid/dry_01_short.wav"
+COUGH_CLIP = "data/audio/coughvid/dry_01_short.wav"
 ALLOWED_CLIPS = frozenset({COUGH_CLIP})
 
 

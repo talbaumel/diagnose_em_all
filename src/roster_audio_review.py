@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-REVIEW_PATH = ROOT / "assets/audio/roster_review.json"
+REVIEW_PATH = ROOT / "data/audio/roster_review.json"
 AUDITION_ENV = "DIAGNOSE_AUDITION_ROSTER_CUES"
 REVIEW_PATIENTS = (
     "COMMON_COLD_KID", "STOMACHACHE_TEEN", "MIGRAINE_SUFFERER", "ALLERGIES_PATIENT",
@@ -57,7 +57,7 @@ def roster_audio_enabled() -> tuple[bool, str]:
     from src.cue_catalog import load_catalog
     hashes = {
         cue.id: cue.sha256 for cue in load_catalog().values()
-        if cue.file.startswith("assets/audio/roster_candidates/")
+        if cue.file.startswith("data/audio/roster_candidates/")
     }
     if roster_review_complete(hashes):
         return True, ""

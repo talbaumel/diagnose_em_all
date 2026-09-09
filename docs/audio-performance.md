@@ -2,8 +2,8 @@
 
 All eleven personas now have explicit audio profiles. The common-cold kid
 retains its original enabled performance. The ten new profiles are packaged
-together behind a full-roster listening-review gate; they can all be exercised
-with the **Audition Full Roster Audio (Unreviewed)** VS Code task.
+together behind a full-roster listening-review gate. Local game launches enable
+their unreviewed audition mode by default, including F5 and the start tasks.
 Voice processing and bodily cues remain independently configurable.
 This is an illustrative gameplay performance, not a clinically validated
 simulation of congestion or hoarseness.
@@ -44,7 +44,7 @@ cooldown. Explicit requests bypass cycle selection, not cooldown or the turn cap
 
 ### Full-roster candidate release
 
-The new [source pack](../assets/audio/roster_candidates/SOURCES.json) contains
+The new [source pack](../data/audio/roster_candidates/SOURCES.json) contains
 21 hash-pinned FSD50K distributed recordings and 19 prepared candidate cues.
 Official metadata identifies clip-level CC0 rights; the dataset is separately
 attributed under CC BY 4.0. Three clipped originals were rejected and are not
@@ -94,22 +94,26 @@ and test results when effects are muted.
 
 #### Review and activation
 
-Normal launches leave the ten new profiles off until the hash-bound
-[review form](../assets/audio/roster_review.json) contains real listening,
+The conversation runtime leaves the ten new profiles off unless audition mode
+is enabled or the hash-bound
+[review form](../data/audio/roster_review.json) contains real listening,
 character-fit and clinical-content signoff for every new cue, plus live and
 muted playtest signoff for all eleven patients. The catalog's `gameplay_trial`
 status is not human approval. The review must not be filled automatically.
 The original kid remains enabled regardless of this gate.
 
-To audition the entire release before signoff:
+The local game entry point (`src.debug_example`) defaults audition mode to on
+without changing an explicitly configured value. F5 and the start tasks use
+this same entry point. To enforce the review gate during local play:
 
 ```bash
-DIAGNOSE_AUDITION_ROSTER_CUES=1 uv run python -m src.debug_example
+DIAGNOSE_AUDITION_ROSTER_CUES=0 uv run python -m src.debug_example
 ```
 
-The equivalent VS Code task is **Audition Full Roster Audio (Unreviewed)**.
-The consultation displays an explicit unreviewed-candidate notice.
-Restart after changing profiles or review records.
+Set `DIAGNOSE_AUDITION_ROSTER_CUES=1` to explicitly enable audition mode, or use
+the **Audition Full Roster Audio (Unreviewed)** VS Code task. While auditioning,
+the consultation displays an explicit unreviewed-candidate notice.
+Restart after changing profiles, review records, or launch settings.
 
 Verify the packaged sources and reproduce a cue-only listening playlist:
 
@@ -189,23 +193,23 @@ never execute WORLD or pause analysis.
 
 ## Cue catalog and licensing
 
-The [runtime catalog](../assets/audio/cue_catalog.json) retains four cold-kid
+The [runtime catalog](../data/audio/cue_catalog.json) retains four cold-kid
 trial assets and registers 19 new default-gated roster candidates.
 The catalog records IDs, hashes, kind, caption, permitted contexts,
 prepared playback level, provenance and license. Profiles cannot specify
 arbitrary cue paths. Modified hashes and redirected paths fail explicitly.
 
-- [COUGHVID sources](../assets/audio/coughvid/SOURCES.json) and
-  [license](../assets/audio/coughvid/LICENSE.txt): CC BY 4.0. The short cough is
+- [COUGHVID sources](../data/audio/coughvid/SOURCES.json) and
+  [license](../data/audio/coughvid/LICENSE.txt): CC BY 4.0. The short cough is
   a trimmed/attenuated derivative; source annotations do not verify age or diagnosis.
-- [Candidate source manifest](../assets/audio/cue_candidates/SOURCES.json),
-  [clip terms](../assets/audio/cue_candidates/LICENSE-CLIPS.txt) and
-  [dataset terms](../assets/audio/cue_candidates/LICENSE-DATASET.txt): selected
+- [Candidate source manifest](../data/audio/cue_candidates/SOURCES.json),
+  [clip terms](../data/audio/cue_candidates/LICENSE-CLIPS.txt) and
+  [dataset terms](../data/audio/cue_candidates/LICENSE-DATASET.txt): selected
   recordings are CC0, with separate FSD50K dataset attribution under CC BY 4.0.
   WAVs came from a pinned Hugging Face mirror, with official clip metadata.
 
 Original recordings, prepared clips and license/provenance records are
-versioned under `assets/audio/`. Rejected sources are retained for provenance
+versioned under `data/audio/`. Rejected sources are retained for provenance
 but never selected by the runtime. Candidate manifests are historical
 preparation records; the catalog records subsequent gameplay-trial promotion.
 Generated listening packs are ignored by Git, not deleted from local disk.

@@ -5,7 +5,7 @@
   "disease": "common cold",
   "patient_type": "COMMON_COLD_KID",
   "performance_profile": {
-    "cough_clip": "assets/audio/coughvid/dry_01_short.wav",
+    "cough_clip": "data/audio/coughvid/dry_01_short.wav",
     "cooldown_seconds": 20,
     "spontaneous_every_turns": 1,
     "cue_selection": "cycle",

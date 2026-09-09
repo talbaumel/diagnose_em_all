@@ -124,8 +124,8 @@ def build(root: Path, output: Path) -> dict:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--root", type=Path, default=Path("assets/audio/cue_candidates"))
-    parser.add_argument("--output", type=Path, default=Path("assets/audio/cue_candidates/inline_audition"))
+    parser.add_argument("--root", type=Path, default=Path("data/audio/cue_candidates"))
+    parser.add_argument("--output", type=Path, default=Path("data/audio/cue_candidates/inline_audition"))
     args = parser.parse_args()
     result = build(args.root, args.output)
     print(f"Prepared {len(result['clips'])} within-speech previews in {args.output}")

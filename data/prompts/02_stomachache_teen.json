@@ -6,7 +6,7 @@
   "patient_type": "STOMACHACHE_TEEN",
   "performance_profile": {
     "delivery": "Speak naturally as a teenager, guarded at first and more direct with respectful questions. Do not imitate bodily sounds; local cues provide them.",
-    "cooldown_seconds": 45, "spontaneous_every_turns": 4, "max_spontaneous_cues": 2,
+    "cooldown_seconds": 15, "spontaneous_every_turns": 2, "max_spontaneous_cues":6,
     "cues": [{"id": "teen_gurgle_01"}, {"id": "teen_exhale_01"}]
   },
   "tests": [

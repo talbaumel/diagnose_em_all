@@ -32,7 +32,7 @@ from src.realtime_conversation import _test_tools
 
 
 ROOT = Path(__file__).resolve().parents[1]
-COUGH_PATH = ROOT / "assets/audio/coughvid/dry_01.wav"
+COUGH_PATH = ROOT / "data/audio/coughvid/dry_01.wav"
 
 
 class AudioEvidenceTests(unittest.TestCase):
@@ -50,7 +50,7 @@ class AudioEvidenceTests(unittest.TestCase):
     def test_audio_is_optional_and_paths_resolve_from_project_root(self):
         self.assertIsNone(Test("text", "result").audio_path)
         self.assertEqual(Test("cough", "Listen", audio=str(COUGH_PATH)).audio_path, COUGH_PATH)
-        test = Test("cough", "Listen", audio="assets/audio/coughvid/dry_01.wav")
+        test = Test("cough", "Listen", audio="data/audio/coughvid/dry_01.wav")
         self.assertEqual(test.audio_path, COUGH_PATH)
         self.assertIsNone(test.image_path)
 

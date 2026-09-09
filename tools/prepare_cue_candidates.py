@@ -233,7 +233,7 @@ def build(root: Path, metadata_zip: Path, voice: Path) -> dict:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--root", type=Path, default=Path("assets/audio/cue_candidates"))
+    parser.add_argument("--root", type=Path, default=Path("data/audio/cue_candidates"))
     parser.add_argument("--metadata-zip", type=Path, required=True)
     parser.add_argument("--voice", type=Path, required=True)
     args = parser.parse_args()

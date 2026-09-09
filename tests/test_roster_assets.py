@@ -20,7 +20,7 @@ from tests.audio_fakes import ControlledSink, until
 from tools.prepare_roster_cues import verify
 
 ROOT = Path(__file__).resolve().parents[1]
-PACK = ROOT / "assets/audio/roster_candidates"
+PACK = ROOT / "data/audio/roster_candidates"
 
 
 class RosterAssetsTests(unittest.TestCase):
