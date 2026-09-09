@@ -74,6 +74,9 @@ class ConversationUITests(unittest.TestCase):
         asyncio.set_event_loop(None)
 
     def setUp(self):
+        environment = patch.dict("os.environ", {"HAS_BOT_ID": "bot-test", "HAS_SCENARIO": "clinical", "HAS_DIRECT_LINE_SECRET": "test-secret"})
+        environment.start()
+        self.addCleanup(environment.stop)
         self.animator = PatientAnimator(0, window=self.window, disease="common cold")
         self.addCleanup(self.animator.close)
         self.stop = asyncio.Event()
@@ -275,6 +278,19 @@ class ConversationUITests(unittest.TestCase):
                 self.assertFalse(self.animator._pokedex.open)
                 self.assertFalse(self.animator.evidence_open)
             self.assertFalse(self.stop.is_set())
+
+    def test_unconfigured_dragon_does_not_open_or_steal_chat_focus(self):
+        self.animator._text_input = "Patient draft"
+        self.animator._set_text_focus(True)
+        with patch.dict("os.environ", {}, clear=True):
+            self.key(pygame.K_F6)
+            position = tuple(round(coordinate * self.window.get_width() / 480) for coordinate in self.animator._pokedex_button.center)
+            self.animator.handle_event(pygame.event.Event(pygame.MOUSEBUTTONUP, button=1, pos=position), self.stop)
+            self.animator.draw()
+            self.assertFalse(self.animator._pokedex.open)
+            self.assertTrue(self.animator._text_focused)
+            self.assertEqual(self.animator._text_input, "Patient draft")
+            self.assertIsNone(self.animator._pokedex.task)
 
     def test_pokedex_isolates_chat_and_restores_patient_draft(self):
         self.animator._text_input = "Patient draft"

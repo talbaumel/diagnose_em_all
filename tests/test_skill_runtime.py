@@ -6,7 +6,7 @@ import asyncio
 import base64
 import json
 import unittest
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pygame
 
@@ -22,6 +22,9 @@ from tests.audio_fakes import ControlledSink, until
 
 class SkillRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
+        environment = patch.dict("os.environ", {"HAS_BOT_ID": "bot-test", "HAS_SCENARIO": "clinical", "HAS_DIRECT_LINE_SECRET": "test-secret"})
+        environment.start()
+        self.addCleanup(environment.stop)
         pygame.init()
         self.animator = PatientAnimator(
             0, window=pygame.display.set_mode((480, 480)), disease="common cold",

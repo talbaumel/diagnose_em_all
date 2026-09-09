@@ -36,6 +36,10 @@ class PokedexPanel:
         self.header_logo = pygame.transform.smoothscale(self.logo, (42, 42)) if self.logo is not None else None
 
     @property
+    def available(self) -> bool:
+        return self.client.available
+
+    @property
     def busy(self) -> bool:
         return self.task is not None and not self.task.done()
 
@@ -48,6 +52,8 @@ class PokedexPanel:
             pygame.key.stop_text_input()
 
     def show(self) -> None:
+        if not self.available:
+            return
         self.open = True
         self.focus(True)
 
@@ -68,7 +74,7 @@ class PokedexPanel:
 
     def submit(self, context: dict) -> None:
         question = self.draft.strip()
-        if not question or self.busy:
+        if not self.available or not question or self.busy:
             return
         self.messages.append(("You", question))
         self.scroll = 0

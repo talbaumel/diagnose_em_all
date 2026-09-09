@@ -907,6 +907,8 @@ class PatientAnimator:
         self._menu = ChoiceMenu("CARE PLAN", ("Add Prescription", "Add Referral", "Review Orders", "Keep Consulting"), f"{len(plan.prescriptions)} prescriptions / {len(plan.referrals)} referrals")
 
     def _open_pokedex(self) -> None:
+        if not self._pokedex.available:
+            return
         if not self._ready or self.won or self.evidence_open or self._diagnosis_open or self._menu is not None or self._care_form is not None or self._pokedex.open or self.skills_modal:
             return
         self._pokedex_chat_was_focused = self._text_focused
@@ -1386,7 +1388,7 @@ class PatientAnimator:
         self._screen.blit(label, label.get_rect(center=self._diagnose_button.center))
         helper_hovered = self._pokedex_button.collidepoint(self._screen_position(pygame.mouse.get_pos()))
         helper_color = UI_WHITE if helper_hovered else UI_PAPER
-        pygame.draw.rect(self._screen, helper_color if enabled else (193, 211, 207), self._pokedex_button, border_radius=5)
+        pygame.draw.rect(self._screen, helper_color if enabled and self._pokedex.available else (193, 211, 207), self._pokedex_button, border_radius=5)
         pygame.draw.rect(self._screen, UI_TEAL, self._pokedex_button, width=1, border_radius=5)
         pokedex_label = self._status_font.render("Dragon Simulator Assist", True, UI_INK)
         brand_width = pokedex_label.get_width() + 32

@@ -12,11 +12,6 @@ import httpx
 from src.azure_auth import GameCredential
 
 
-DEFAULT_HAS_BOT_ID = "obs-hcp-1-kz3jzz4"
-DEFAULT_HAS_SCENARIO = "dsb_debug_scenario"
-DEFAULT_HAS_VAULT = "https://hlsamlta4hwork0724448635.vault.azure.net/"
-
-
 class PokedexError(Exception):
     pass
 
@@ -30,12 +25,25 @@ class HASSettings:
 
     @classmethod
     def from_environment(cls) -> HASSettings:
-        bot_id = os.environ.get("HAS_BOT_ID", DEFAULT_HAS_BOT_ID).strip()
-        scenario = os.environ.get("HAS_SCENARIO", DEFAULT_HAS_SCENARIO).strip()
+        bot_id = os.environ.get("HAS_BOT_ID", "").strip()
+        scenario = os.environ.get("HAS_SCENARIO", "").strip()
         if not bot_id or not scenario:
             raise PokedexError("Configure HAS_BOT_ID and HAS_SCENARIO, then restart the game.")
         tenant_name = bot_id if bot_id.startswith("bot-") else f"bot-{bot_id}"
-        return cls(bot_id, scenario, os.environ.get("HAS_KEY_VAULT_URL", DEFAULT_HAS_VAULT), os.environ.get("HAS_SECRET_NAME", f"{tenant_name}-webchat-secret"))
+        return cls(bot_id, scenario, os.environ.get("HAS_KEY_VAULT_URL", "").strip(), os.environ.get("HAS_SECRET_NAME", f"{tenant_name}-webchat-secret").strip())
+
+    def validate(self) -> None:
+        if not self.bot_id.strip() or not self.scenario.strip():
+            raise PokedexError("Configure HAS_BOT_ID and HAS_SCENARIO, then restart the game.")
+        if os.environ.get("HAS_DIRECT_LINE_SECRET", "").strip():
+            return
+        try:
+            vault = urlparse(self.vault_url)
+            valid_vault = vault.scheme == "https" and (vault.hostname or "").endswith(".vault.azure.net") and not vault.username and not vault.port
+        except ValueError:
+            valid_vault = False
+        if not valid_vault or not self.secret_name.strip():
+            raise PokedexError("Set HAS_DIRECT_LINE_SECRET or a valid HAS_KEY_VAULT_URL and HAS_SECRET_NAME.")
 
     @property
     def base_url(self) -> str:
@@ -114,6 +122,14 @@ class HASPokedex:
         self.timeout = 120.0
         self.poll_interval = 1.0
 
+    @property
+    def available(self) -> bool:
+        try:
+            (self.settings or HASSettings.from_environment()).validate()
+        except PokedexError:
+            return False
+        return True
+
     async def _secret(self, client: httpx.AsyncClient, settings: HASSettings) -> str:
         secret = os.environ.get("HAS_DIRECT_LINE_SECRET", "").strip()
         if secret:
@@ -163,6 +179,7 @@ class HASPokedex:
 
     async def _ask(self, question: str, context: dict) -> str:
         settings = self.settings or HASSettings.from_environment()
+        settings.validate()
         user = {"id": f"dl_pokedex_{uuid.uuid4().hex}", "name": "Game clinician"}
         async with httpx.AsyncClient(timeout=30, transport=self.transport) as client:
             secret = await self._secret(client, settings)

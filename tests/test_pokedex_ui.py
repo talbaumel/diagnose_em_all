@@ -1,6 +1,6 @@
 import asyncio
 import unittest
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pygame
 
@@ -36,6 +36,20 @@ class PokedexPanelTests(unittest.IsolatedAsyncioTestCase):
         self.panel.hide()
         self.panel.show()
         self.assertEqual(len(self.panel.messages), 2)
+
+    async def test_missing_configuration_disables_open_and_submit(self):
+        with patch.dict("os.environ", {}, clear=True):
+            panel = PokedexPanel()
+            panel.draft = "Help"
+            with patch.object(panel.client, "ask", new_callable=AsyncMock) as ask:
+                panel.show()
+                panel.submit({})
+                self.assertFalse(panel.available)
+                self.assertFalse(panel.open)
+                self.assertFalse(panel.focused)
+                self.assertIsNone(panel.task)
+                self.assertEqual(panel.messages, [])
+                ask.assert_not_called()
 
     async def test_close_cancels_request_and_keeps_draft(self):
         started = asyncio.Event()

@@ -382,13 +382,17 @@ added to the patient transcript, scorecard, or save file. HAS may retain request
 under its own service policy; cancelling locally cannot retract an already-sent
 request. Use fictional game cases only, not real patient information.
 
-The default HCP endpoint is `https://eastus.healthbot-dev.microsoft.com/account/obs-hcp-1-kz3jzz4`, using the HAS Bench scenario and Key Vault configuration:
+Dragon Simulator Assist is optional and disabled when its configuration is missing
+or blank. Its button is greyed out and F6 does nothing; patient conversations and
+scoring remain available. No HAS request or Key Vault lookup is attempted without
+a configured secret source. Supply your own bot, scenario, and either a Direct Line
+secret or a Key Vault URL before launching the game:
 
 | Environment Variable | Default / Purpose |
 | --- | --- |
-| `HAS_BOT_ID` | `obs-hcp-1-kz3jzz4`; bot account ID, not an Entra tenant ID |
-| `HAS_SCENARIO` | `dsb_debug_scenario` |
-| `HAS_KEY_VAULT_URL` | `https://hlsamlta4hwork0724448635.vault.azure.net/` |
+| `HAS_BOT_ID` | Required bot account ID, not an Entra tenant ID; no default |
+| `HAS_SCENARIO` | Required scenario trigger; no default |
+| `HAS_KEY_VAULT_URL` | Your Key Vault URL; required unless a Direct Line secret is supplied |
 | `HAS_SECRET_NAME` | `bot-<bot-id>-webchat-secret`; a canonical-name 404 tries the legacy `bot-<bot-id>-web-chat-secret` |
 | `HAS_DIRECT_LINE_SECRET` | Optional Web Chat secret supplied securely through the environment; bypasses Key Vault |
 
@@ -399,9 +403,9 @@ is already cached or a Direct Line secret is supplied. Access to the game's Open
 resource does not grant HAS Key Vault access. Never put secret values in source,
 debug configuration committed to git, or patient JSON.
 
-Live verification on September 6, 2026 succeeded with `obs-hcp-1-kz3jzz4` and
-`dsb_debug_scenario`: Key Vault secret lookup, Direct Line conversation creation,
-scenario startup, and a response to a synthetic clinical question all completed.
+Configuration checks do not verify remote secret existence or permissions. A
+configured but inaccessible Key Vault secret produces an access error on request;
+it does not prevent the rest of the game from running.
 
 HAS guidance is AI-generated educational assistance, not real medical advice;
 it does not automatically order tests, prescribe, submit a diagnosis, or finish a visit.

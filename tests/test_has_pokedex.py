@@ -182,14 +182,36 @@ class HASPokedexTests(unittest.IsolatedAsyncioTestCase):
             HASSettings.from_environment()
         self.assertIn("europe.directline", HASSettings("bot-europe-test", "clinical").base_url)
 
-    def test_reference_hcp_configuration_and_overrides(self):
+    def test_configuration_requires_explicit_bot_and_scenario(self):
         with patch.dict("os.environ", {}, clear=True):
-            settings = HASSettings.from_environment()
-        self.assertEqual(settings.bot_id, "obs-hcp-1-kz3jzz4")
-        self.assertEqual(settings.scenario, "dsb_debug_scenario")
-        self.assertEqual(settings.secret_name, "bot-obs-hcp-1-kz3jzz4-webchat-secret")
+            self.assertFalse(HASPokedex().available)
+            with self.assertRaises(PokedexError):
+                HASSettings.from_environment()
         with patch.dict("os.environ", {"HAS_BOT_ID": "bot-other", "HAS_SCENARIO": "clinical"}, clear=True):
             self.assertEqual(HASSettings.from_environment().secret_name, "bot-other-webchat-secret")
+
+    async def test_missing_secret_source_never_uses_network_or_credentials(self):
+        for secret in ("", "   "):
+            with self.subTest(secret=secret), patch.dict("os.environ", {"HAS_BOT_ID": "bot-test", "HAS_SCENARIO": "clinical", "HAS_DIRECT_LINE_SECRET": secret}, clear=True), patch("src.has_pokedex.GameCredential") as credential, patch("src.has_pokedex.httpx.AsyncClient") as client:
+                helper = HASPokedex()
+                self.assertFalse(helper.available)
+                with self.assertRaisesRegex(PokedexError, "HAS_DIRECT_LINE_SECRET"):
+                    await helper.ask("Help", {})
+                credential.assert_not_called()
+                client.assert_not_called()
+
+    def test_availability_requires_complete_configuration(self):
+        for environment, expected in (
+            ({"HAS_DIRECT_LINE_SECRET": "test-secret"}, True),
+            ({"HAS_KEY_VAULT_URL": "https://example.vault.azure.net/"}, True),
+            ({"HAS_KEY_VAULT_URL": "https://example.vault.azure.net/", "HAS_SECRET_NAME": " "}, False),
+            ({"HAS_KEY_VAULT_URL": "http://example.vault.azure.net/"}, False),
+            ({"HAS_KEY_VAULT_URL": "https://[invalid"}, False),
+            ({"HAS_DIRECT_LINE_SECRET": "test-secret", "HAS_BOT_ID": " "}, False),
+            ({"HAS_DIRECT_LINE_SECRET": "test-secret", "HAS_SCENARIO": " "}, False),
+        ):
+            with self.subTest(environment=environment), patch.dict("os.environ", {"HAS_BOT_ID": "bot-test", "HAS_SCENARIO": "clinical", **environment}, clear=True):
+                self.assertEqual(HASPokedex().available, expected)
 
     def test_structured_answer_and_sources_exclude_debug_trace(self):
         result = activity_text({"text": "Internal display trace", "value": {"response": {"answer": "Check the history.", "grounding_urls": ["https://example.org/reference", "javascript:alert(1)"], "debug": "Private reasoning"}}})

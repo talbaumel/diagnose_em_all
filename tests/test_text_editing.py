@@ -111,6 +111,9 @@ class TextEditingTests(unittest.TestCase):
 
 class TextFieldIntegrationTests(unittest.TestCase):
     def setUp(self):
+        environment = patch.dict("os.environ", {"HAS_BOT_ID": "bot-test", "HAS_SCENARIO": "clinical", "HAS_DIRECT_LINE_SECRET": "test-secret"})
+        environment.start()
+        self.addCleanup(environment.stop)
         pygame.init()
         self.addCleanup(pygame.quit)
         self.window = pygame.display.set_mode((480, 480))
